@@ -21,6 +21,12 @@
 //   - `openSync(file, "wx")`, NOT a lock file plus a write. Create-if-absent
 //     is atomic in the kernel; a read-modify-write of a holders array would
 //     need its own lock to protect it, which is the machinery this avoids.
+//     The holder record is then written THROUGH that fd — see `acquirePermit`
+//     — because create-now-write-later leaves a window in which the file
+//     exists and is empty. No test here covers that window: it needs two
+//     processes interleaved inside a few microseconds, and a single-process
+//     test asserting the end state would pass against the broken version too,
+//     which is worse than no test.
 //   - A DIRECTORY EVERY CONTENDER AGREES ON, chosen by the caller. Mutual
 //     exclusion over two different paths excludes nothing, silently.
 //   - NEVER QUEUE. A refusal names a holder and returns immediately; waiting
@@ -30,7 +36,7 @@ import {
   openSync,
   readFileSync,
   rmSync,
-  writeFileSync,
+  writeSync,
 } from "node:fs"
 import path from "node:path"
 
@@ -162,8 +168,19 @@ export function acquirePermit(i: AcquirePermitInput): Permit {
         rmSync(file, { force: true })
         continue
       }
-      closeSync(fd)
-      writeFileSync(file, `${JSON.stringify(i.holder)}\n`)
+      // Written THROUGH the fd we won, before closing it. `openSync(wx)` +
+      // a later `writeFileSync` leaves the file zero-length for a moment, and
+      // a contender arriving in that window reads it as unparseable, concludes
+      // a holder died mid-write, removes it and takes the slot — so both
+      // processes believe they hold the lane and the loser's `release()`
+      // no-ops. Harmless-looking before permits; under them each lane maps to
+      // its own dev database, so a double-take is the two-arcs-one-schema
+      // failure `arc-permit-guard.ts` exists to prevent.
+      try {
+        writeSync(fd, `${JSON.stringify(i.holder)}\n`)
+      } finally {
+        closeSync(fd)
+      }
       return {
         holder: i.holder,
         slot,
