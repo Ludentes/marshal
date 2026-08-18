@@ -13,18 +13,23 @@ function packageFiles(): string[] {
     .map((name) => path.join(__dirname, name))
 }
 
-// Every `from "..."`, not `^import ... from "..."`. A line-anchored pattern
-// sees only single-line imports, so a multi-line `import {…} from
-// "./anything"` would slip past the very assertion written to catch it. Stated
-// as a rule rather than as an observation about today's files: these imports
-// are single-line now, and a future one need not be.
+// Matches every from-clause anywhere in the file, rather than being anchored
+// to the start of a line. A line-anchored pattern sees only single-line
+// imports, so an import of a local path whose specifier is pushed onto the
+// next line would slip past the very assertion written to catch it. Stated as
+// a rule rather than as an observation about today's files: these imports are
+// single-line now, and a future one need not be.
+//
+// It reads raw source and deliberately does NOT strip comments first, so
+// prose that spells a from-clause out literally gets reported as a violation.
+// That is the intended trade. Stripping comments removes that false positive
+// but loses every specifier containing '//' or '/*' -- which silently admits
+// a URL import, exactly the foreign dependency this guard exists to catch.
+// One failure mode shouts and is fixed in a minute; the other is a guard that
+// passes while the boundary is gone. Prefer the one that shouts, and write
+// the surrounding prose so it does not trip.
 function importsOf(source: string): string[] {
-  // Comments first: the very comment above contains the words `from "..."`,
-  // and a scanner that cannot tell prose from code reports its own
-  // explanation as a violation. Stripping can only lose a specifier that sits
-  // behind a `//` on its own line, which is already not an import.
-  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "")
-  return [...code.matchAll(/\bfrom\s+"([^"]+)"/g)].map((m) => m[1] as string)
+  return [...source.matchAll(/\bfrom\s+"([^"]+)"/g)].map((m) => m[1] as string)
 }
 
 describe("the Marshal boundary", () => {
