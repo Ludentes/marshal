@@ -31,13 +31,7 @@
 //     exclusion over two different paths excludes nothing, silently.
 //   - NEVER QUEUE. A refusal names a holder and returns immediately; waiting
 //     is the caller's decision to make with its own information.
-import {
-  closeSync,
-  openSync,
-  readFileSync,
-  rmSync,
-  writeSync,
-} from "node:fs"
+import { closeSync, openSync, readFileSync, rmSync, writeSync } from "node:fs"
 import path from "node:path"
 
 export interface PermitHolder {
