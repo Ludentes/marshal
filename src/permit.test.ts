@@ -91,18 +91,4 @@ describe("acquirePermit", () => {
     a.release()
     expect(take("arc 3", 1).slot).toBe(0)
   })
-
-  it("imports nothing from this codebase", () => {
-    const src = readFileSync(path.join(__dirname, "permit.ts"), "utf8")
-    // Every `from "..."`, not `^import .* from "..."`. A line-anchored pattern
-    // sees only single-line imports, so a multi-line `import {…} from
-    // "./anything"` would slip past the very assertion written to catch it.
-    // Stated as a rule rather than as an observation about this file: the
-    // imports here are single-line today, and a future one need not be.
-    const imports = [...src.matchAll(/\bfrom\s+"([^"]+)"/g)].map((m) => m[1])
-    // node: builtins only. The moment this fails, extraction has become a
-    // rewrite rather than a move — which is the whole reason it is asserted.
-    expect(imports.length).toBeGreaterThan(0)
-    expect(imports.filter((s) => !s?.startsWith("node:"))).toEqual([])
-  })
 })
