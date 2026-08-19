@@ -78,3 +78,79 @@ describe("the Marshal boundary", () => {
     expect(offenders).toEqual([])
   })
 })
+
+describe("the Marshal vocabulary", () => {
+  it("the refusal kinds are exactly the allowlist", async () => {
+    const { BLOCKED_KINDS } = await import("./types")
+    // Adding a kind after publication is a breaking change to a union a
+    // consumer cannot opt out of, so the list is asserted rather than trusted.
+    expect([...BLOCKED_KINDS]).toEqual([
+      "no-capacity",
+      "resource-held",
+      "not-ready",
+      "budget-exhausted",
+      "custom",
+    ])
+  })
+
+  it("never emits the custom arm from its own source", () => {
+    // `custom` is construct-only for consumers. A consumer's tag is its own
+    // vocabulary; the package emitting one would be the leak, and a check that
+    // reads only `kind` would wave a custom-tagged refusal carrying a domain
+    // noun straight through the allowlist above.
+    //
+    // Declaring the arm and constructing one are told apart by what follows
+    // the string: a type member ends in `;`, an object property in `,` or `}`.
+    // types.ts MUST declare the arm — it is the file that defines the union —
+    // so a check that cannot make this distinction forbids the one thing the
+    // package is required to do. That is what the first version did.
+    //
+    // Known gap, stated rather than implied: this reads text, so it misses
+    // `kind: "custom" as const` and anything built through a variable. It
+    // catches the forms a leak is actually written in, and is not a proof.
+    const emitted = /kind:\s*"custom"\s*[,}]/
+    const offenders: string[] = []
+    for (const file of packageFiles()) {
+      if (file.endsWith(".test.ts")) continue
+      if (emitted.test(readFileSync(file, "utf8"))) {
+        offenders.push(path.basename(file))
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+
+  // Split into words rather than matched as a substring-with-boundaries. The
+  // first version of this guard used a case-insensitive pattern requiring a
+  // non-letter on each side of the noun, which meant a following capital
+  // blocked the match: it caught a bare `Arc` and missed `arcHolder`,
+  // `hostLease`, `ProjectLock`, `StackLease` and `repoName` -- every form
+  // these names actually take. A guard that passes while the boundary is gone
+  // is worse than no guard.
+  const BANNED = new Set(["arc", "seat", "project", "stack", "repo", "host"])
+
+  function words(name: string): string[] {
+    return name
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .split(/[^a-zA-Z]+/)
+      .filter(Boolean)
+      .map((w) => w.toLowerCase())
+  }
+
+  it("no exported name carries Galatea's nouns", () => {
+    const offenders: string[] = []
+    for (const file of packageFiles()) {
+      if (file.endsWith(".test.ts")) continue
+      const src = readFileSync(file, "utf8")
+      const declared =
+        /export\s+(?:interface|type|class|function|const|enum)\s+(\w+)/g
+      for (const m of src.matchAll(declared)) {
+        const name = m[1] as string
+        const hit = words(name).some(
+          (w) => BANNED.has(w) || BANNED.has(w.replace(/s$/, "")),
+        )
+        if (hit) offenders.push(`${path.basename(file)}: ${name}`)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+})
