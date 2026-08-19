@@ -13,23 +13,52 @@ function packageFiles(): string[] {
     .map((name) => path.join(__dirname, name))
 }
 
-// Matches every from-clause anywhere in the file, rather than being anchored
-// to the start of a line. A line-anchored pattern sees only single-line
-// imports, so an import of a local path whose specifier is pushed onto the
-// next line would slip past the very assertion written to catch it. Stated as
-// a rule rather than as an observation about today's files: these imports are
+// Four shapes, because a module can be pulled in without a from-clause: a
+// bare side-effect statement, the dynamic call form and the CommonJS call form
+// all reach outside the package while naming no binding. This guard matched
+// the from-clause alone until review, so all three passed unseen -- and one of
+// them is the form this very file uses further down, which is how obvious it
+// looks in hindsight and how invisible it was in practice.
+//
+// None of the patterns is anchored to the start of a line. A line-anchored
+// pattern sees only single-line statements, so one whose specifier is pushed
+// onto the next line slips past the assertion written to catch it. Stated as a
+// rule rather than as an observation about today's files: these are all
 // single-line now, and a future one need not be.
 //
-// It reads raw source and deliberately does NOT strip comments first, so
-// prose that spells a from-clause out literally gets reported as a violation.
+// They read raw source and deliberately do NOT strip comments first, so prose
+// that spells one of these shapes out literally gets reported as a violation.
 // That is the intended trade. Stripping comments removes that false positive
-// but loses every specifier containing '//' or '/*' -- which silently admits
-// a URL import, exactly the foreign dependency this guard exists to catch.
-// One failure mode shouts and is fixed in a minute; the other is a guard that
-// passes while the boundary is gone. Prefer the one that shouts, and write
-// the surrounding prose so it does not trip.
+// but loses every specifier containing '//' or '/*' -- which silently admits a
+// URL import, exactly the foreign dependency this guard exists to catch. One
+// failure mode shouts and is fixed in a minute; the other is a guard that
+// passes while the boundary is gone. Prefer the one that shouts, and write the
+// surrounding prose so it does not trip.
+const SPECIFIERS = [
+  /\bfrom\s+"([^"]+)"/g,
+  /\bimport\s+"([^"]+)"/g,
+  /\bimport\s*\(\s*"([^"]+)"\s*\)/g,
+  /\brequire\s*\(\s*"([^"]+)"\s*\)/g,
+]
+
 function importsOf(source: string): string[] {
-  return [...source.matchAll(/\bfrom\s+"([^"]+)"/g)].map((m) => m[1] as string)
+  const found: string[] = []
+  for (const pattern of SPECIFIERS) {
+    for (const m of source.matchAll(pattern)) found.push(m[1] as string)
+  }
+  return found
+}
+
+// Resolved, not prefix-matched. A specifier beginning "./" is not necessarily
+// inside the package: "./../lib/anything" starts with the admitted prefix and
+// lands two directories away. The question is where the path ENDS UP, which
+// only resolution can answer.
+function admits(spec: string, extra: readonly string[]): boolean {
+  if (spec.startsWith("node:")) return true
+  if (extra.includes(spec)) return true
+  if (!spec.startsWith(".")) return false
+  const target = path.resolve(__dirname, spec)
+  return target === __dirname || target.startsWith(__dirname + path.sep)
 }
 
 describe("the Marshal boundary", () => {
@@ -48,12 +77,12 @@ describe("the Marshal boundary", () => {
     expect(dirs).toEqual([])
   })
 
-  it("admits only node: and ./ in non-test files", () => {
+  it("admits only node: and paths inside the package, in non-test files", () => {
     const offenders: string[] = []
     for (const file of packageFiles()) {
       if (file.endsWith(".test.ts")) continue
       for (const spec of importsOf(readFileSync(file, "utf8"))) {
-        if (!spec.startsWith("node:") && !spec.startsWith("./")) {
+        if (!admits(spec, [])) {
           offenders.push(`${path.basename(file)} -> ${spec}`)
         }
       }
@@ -70,9 +99,9 @@ describe("the Marshal boundary", () => {
     for (const file of packageFiles()) {
       if (!file.endsWith(".test.ts")) continue
       for (const spec of importsOf(readFileSync(file, "utf8"))) {
-        const ok =
-          spec.startsWith("node:") || spec.startsWith("./") || spec === "vitest"
-        if (!ok) offenders.push(`${path.basename(file)} -> ${spec}`)
+        if (!admits(spec, ["vitest"])) {
+          offenders.push(`${path.basename(file)} -> ${spec}`)
+        }
       }
     }
     expect(offenders).toEqual([])
@@ -136,15 +165,34 @@ describe("the Marshal vocabulary", () => {
       .map((w) => w.toLowerCase())
   }
 
+  // `default` and `async` sit between the keyword and the name, and a re-export
+  // list names things without any keyword at all. The first version matched
+  // none of those three, so a domain noun on an async export, a default export
+  // or a brace list left the guard green.
+  function exportedNames(src: string): string[] {
+    const names: string[] = []
+    const declared =
+      /export\s+(?:default\s+)?(?:async\s+)?(?:interface|type|class|function|const|let|var|enum)\s+(\w+)/g
+    for (const m of src.matchAll(declared)) names.push(m[1] as string)
+    for (const m of src.matchAll(/export\s*\{([^}]*)\}/g)) {
+      for (const part of (m[1] as string).split(",")) {
+        // `X as Y` exports Y; the local name is nobody else's business.
+        const shown = part
+          .trim()
+          .split(/\s+as\s+/)
+          .pop()
+          ?.trim()
+        if (shown) names.push(shown)
+      }
+    }
+    return names
+  }
+
   it("no exported name carries Galatea's nouns", () => {
     const offenders: string[] = []
     for (const file of packageFiles()) {
       if (file.endsWith(".test.ts")) continue
-      const src = readFileSync(file, "utf8")
-      const declared =
-        /export\s+(?:interface|type|class|function|const|enum)\s+(\w+)/g
-      for (const m of src.matchAll(declared)) {
-        const name = m[1] as string
+      for (const name of exportedNames(readFileSync(file, "utf8"))) {
         const hit = words(name).some(
           (w) => BANNED.has(w) || BANNED.has(w.replace(/s$/, "")),
         )

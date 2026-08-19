@@ -347,3 +347,113 @@ describe("reconcile", () => {
     expect(given.map((w) => w.spent)).toEqual([83, 0])
   })
 })
+
+describe("pick, the findings from review", () => {
+  it("treats a resource named twice as one resource", () => {
+    // `needs` carries no multiplicity. Unfolded, this was checked once against
+    // a free lane and then consumed twice: granted, two holders on a limit of
+    // one, and `holds` handed back the name twice so the caller double-frees.
+    const result = pick({
+      jobs: [job("a", "lane", "lane"), job("b", "lane")],
+      capacity: { counting: { lane: { limit: 1, holders: [] } } },
+      rank: asGiven,
+      now: 1000,
+    })
+    expect(result.granted.map((g) => g.holds)).toEqual([["lane"]])
+    expect(result.refused.map((r) => r.job.id)).toEqual(["b"])
+  })
+
+  it("does not debit a budget twice for one repeated name", () => {
+    const capacity = {
+      budget: { tokens: [{ name: "w", limit: 100, spent: 90, resets: 5 }] },
+    }
+    const result = pick({
+      jobs: [
+        { id: "a", needs: ["tokens", "tokens"], cost: 8 },
+        { id: "b", needs: ["tokens"], cost: 8 },
+      ],
+      capacity,
+      rank: asGiven,
+      now: 1000,
+    })
+    // Admission approved 90 + 8. Debiting 16 leaves 106 spent against a limit
+    // of 100 — an overdraw invisible until the provider refuses.
+    expect(result.granted.map((g) => g.job.id)).toEqual(["a"])
+    expect(result.refused[0]?.blocked.kind).toBe("budget-exhausted")
+  })
+
+  it("applies every map a name is registered in, not just the first", () => {
+    // A resource that is both budgeted and concurrency-limited is an ordinary
+    // thing to declare. The budget branch used to return before the counting
+    // check ran, so the limit was simply not applied.
+    const result = pick({
+      jobs: [job("a", "t"), job("b", "t"), job("c", "t")],
+      capacity: {
+        counting: { t: { limit: 1, holders: [] } },
+        budget: { t: [{ name: "w", limit: 1000, spent: 0, resets: 5 }] },
+      },
+      rank: asGiven,
+      now: 1000,
+    })
+    expect(result.granted.map((g) => g.job.id)).toEqual(["a"])
+    expect(result.refused.map((r) => r.blocked.kind)).toEqual([
+      "no-capacity",
+      "no-capacity",
+    ])
+  })
+
+  it("refuses to lose a job the rank function dropped", () => {
+    // Neither granted nor refused is not "deferred" under NEVER QUEUE — the
+    // caller re-asks with what it was told, so an omitted job is lost.
+    const dropping: RankFn = (jobs) =>
+      jobs.slice(0, 1).map((j) => ({ job: j, rank: 1, why: { base: 1 } }))
+    expect(() =>
+      pick({
+        jobs: [job("a", "lane"), job("b", "lane")],
+        capacity: { counting: { lane: { limit: 9, holders: [] } } },
+        rank: dropping,
+        now: 1000,
+      }),
+    ).toThrow(/dropped b/)
+  })
+
+  it("reports a negative reset rather than rounding it up to zero", () => {
+    // `resets` is the caller's clock in the caller's units, so offsets from a
+    // monotonic base are legitimate. A 0 seed reported "already reset".
+    const result = pick({
+      jobs: [{ id: "a", needs: ["t"], cost: 50 }],
+      capacity: {
+        budget: { t: [{ name: "w", limit: 10, spent: 9, resets: -100 }] },
+      },
+      rank: asGiven,
+      now: 1000,
+    })
+    const blocked = result.refused[0]?.blocked
+    if (blocked?.kind !== "budget-exhausted") throw new Error("wrong kind")
+    expect(blocked.resets).toBe(-100)
+  })
+
+  it("grants a cleared breaker on a resource with no allocation limit", () => {
+    // Declared-but-unlimited, not never-declared. The caller named it and
+    // attached no limit, which is what a bare circuit breaker on an unmetered
+    // provider looks like. The existing cleared-breaker test also registers
+    // the name in `counting`, so this path had no coverage and read as an
+    // oversight next to the unknown-name refusal directly below it.
+    const result = pick({
+      jobs: [job("a", "prov")],
+      capacity: { unavailable: { prov: { until: 5 } } },
+      rank: asGiven,
+      now: 6000,
+    })
+    expect(result.granted.map((g) => g.job.id)).toEqual(["a"])
+  })
+
+  it("flags a zero estimate that cost money even at a tolerance of one", () => {
+    const result = reconcile([{ name: "w", limit: 100, spent: 0, resets: 1 }], {
+      estimated: 0,
+      actual: 900,
+      tolerance: 1,
+    })
+    expect(result.beyondTolerance).toBe(true)
+  })
+})

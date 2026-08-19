@@ -87,22 +87,45 @@ function asHolder(job: Job, now: number): Holder {
   return { id: job.id, what: job.id, since: String(now) }
 }
 
-/** The first reason this job cannot run, or undefined if it can. */
-function firstBlocker(job: Job, w: Working): Blocked | undefined {
-  for (const resource of job.needs) {
+/**
+ * The first reason this job cannot run, or undefined if it can.
+ *
+ * Every map the name appears in is consulted — none of these branches exits
+ * the iteration early. A name registered as both budgeted and rate-limited
+ * used to have its concurrency limit silently ignored, because the budget
+ * branch returned before the counting check ran: three jobs were granted on a
+ * limit-of-one. That is the same mistake as sizing admission to the loosest
+ * window, made across kinds instead of within one.
+ */
+function firstBlocker(
+  job: Job,
+  needs: string[],
+  w: Working,
+): Blocked | undefined {
+  for (const resource of needs) {
+    // Whether any map has heard of this name at all. A name the caller never
+    // declared is a typo; a name declared with no allocation limit is a
+    // deliberate choice. The two must not be conflated — see the `known`
+    // check at the end of the loop.
+    let known = false
+
     const gate = w.unavailable[resource]
-    if (gate && (gate.until === undefined || gate.until > w.now)) {
-      return { kind: "not-ready", resource, until: gate.until }
+    if (gate) {
+      known = true
+      if (gate.until === undefined || gate.until > w.now) {
+        return { kind: "not-ready", resource, until: gate.until }
+      }
     }
 
     if (w.exclusive.has(resource)) {
+      known = true
       const by = w.exclusive.get(resource)
       if (by) return { kind: "resource-held", resource, by }
-      continue
     }
 
     const budget = w.budget.get(resource)
     if (budget) {
+      known = true
       const price = costOf(job, w.cost)
       // Every window, not the loosest. The tightest one is the allowance; the
       // others are burst limits, and satisfying only a burst limit is how a
@@ -110,21 +133,23 @@ function firstBlocker(job: Job, w: Working): Blocked | undefined {
       const short = budget.filter((win) => win.spent + price > win.limit)
       if (short.length > 0) {
         // The LATEST reset among the short windows, not the first one found.
-        // `find` would answer whichever the array happened to list first, so
-        // an operator told "retry in five hours" while the weekly allowance is
-        // gone comes back to the same refusal. That is the loose-window error
-        // this whole kind exists to prevent, one level further down.
+        // Answering with whichever the array happened to list first tells an
+        // operator to retry in five hours while the weekly allowance is gone.
+        // Seeded at -Infinity, not 0: `resets` is the caller's clock in the
+        // caller's units, so a caller using offsets from a monotonic base can
+        // legitimately have every short window negative, and a 0 seed would
+        // report "already reset" — the same wrong answer by another route.
         const resets = short.reduce(
           (late, win) => Math.max(late, win.resets),
-          0,
+          Number.NEGATIVE_INFINITY,
         )
         return { kind: "budget-exhausted", resource, resets }
       }
-      continue
     }
 
     const counted = w.counting.get(resource)
     if (counted) {
+      known = true
       if (counted.holders.length >= counted.limit) {
         // Handed out by reference on purpose, after checking it is not
         // observable: `holders` only grows, so once it reaches `limit` no
@@ -134,31 +159,39 @@ function firstBlocker(job: Job, w: Working): Blocked | undefined {
         // fail, which is what proved the copy was mechanism nobody needed.
         return { kind: "no-capacity", resource, holders: counted.holders }
       }
-      continue
     }
 
-    // Reaching here means the name is in no capacity map at all. (A resource
-    // listed only in `unavailable`, whose window has passed, is deliberately
-    // let through: a breaker that has cleared is not a resource to allocate.)
-    // Granting an untracked name would hand out something nothing counts, so
-    // it is refused as not-ready with no return time.
-    if (!gate) return { kind: "not-ready", resource }
+    // The name is in no map at all: the caller never declared it. Granting it
+    // would hand out something nothing counts, so it is refused as not-ready
+    // with no return time — a refusal is recoverable, a phantom grant is not.
+    //
+    // A name declared ONLY in `unavailable`, whose window has passed, is a
+    // different thing and is granted: the caller told us about it and told us
+    // no allocation limit applies, which is what a bare circuit breaker on an
+    // unmetered provider looks like. The distinction is declared-but-unlimited
+    // against never-declared, and it is asserted by its own test rather than
+    // left to read as an oversight.
+    if (!known) return { kind: "not-ready", resource }
   }
   return undefined
 }
 
-/** Called only after {@link firstBlocker} cleared every need. */
-function consume(job: Job, w: Working): void {
-  for (const resource of job.needs) {
+/**
+ * Called only after {@link firstBlocker} cleared every need.
+ *
+ * Applies to every map the name appears in, and must walk the SAME list
+ * `firstBlocker` checked. Checking one list and debiting another is how a
+ * resource gets overcommitted with both halves looking correct in isolation.
+ */
+function consume(job: Job, needs: string[], w: Working): void {
+  for (const resource of needs) {
     if (w.exclusive.has(resource)) {
       w.exclusive.set(resource, asHolder(job, w.now))
-      continue
     }
     const budget = w.budget.get(resource)
     if (budget) {
       const price = costOf(job, w.cost)
       for (const win of budget) win.spent += price
-      continue
     }
     const counted = w.counting.get(resource)
     if (counted) counted.holders.push(asHolder(job, w.now))
@@ -208,14 +241,41 @@ export function pick(i: PickInput): PickResult {
   const granted: Grant[] = []
   const refused: Refusal[] = []
 
-  for (const { job, rank } of i.rank(i.jobs, i.now)) {
-    const blocked = firstBlocker(job, w)
+  const ranked = i.rank(i.jobs, i.now)
+
+  // `rank` must be total. A rank function that filters — a threshold, a
+  // de-duplication, a bug — produces a result where granted + refused is
+  // shorter than jobs, and the missing job is neither run nor refused. Under
+  // NEVER QUEUE the caller re-asks with what it was told, so a job that
+  // appears in neither list is not deferred: it is lost, silently, and the
+  // consumer has no way to notice. Refusing it is not available either, since
+  // there is no honest `Blocked` for "the policy did not mention it".
+  const returned = new Set(ranked.map((r) => r.job.id))
+  const dropped = i.jobs.filter((j) => !returned.has(j.id))
+  if (dropped.length > 0) {
+    throw new Error(
+      `rank() must return every job it was given; it dropped ${dropped
+        .map((j) => j.id)
+        .join(", ")}`,
+    )
+  }
+
+  for (const { job, rank } of ranked) {
+    // A name repeated in `needs` is one resource, not two. `needs` carries no
+    // multiplicity, and the check and the debit read it separately: unfolded,
+    // `["lane","lane"]` was tested once against a free lane and then consumed
+    // twice, so a limit-of-one resource ended up with two holders and a budget
+    // window was debited double what admission approved. If a job ever needs
+    // two units of something, that wants an explicit count in the type, not a
+    // repeated string that happens to work in one half of the code.
+    const needs = [...new Set(job.needs)]
+    const blocked = firstBlocker(job, needs, w)
     if (blocked) {
       refused.push({ job, blocked })
       continue
     }
-    consume(job, w)
-    granted.push({ job, holds: [...job.needs], rank })
+    consume(job, needs, w)
+    granted.push({ job, holds: needs, rank })
   }
 
   return { granted, refused }
@@ -258,13 +318,22 @@ export function reconcile(
     // would otherwise manufacture allowance out of a bookkeeping error.
     spent: Math.max(0, w.spent + correction),
   }))
-  // A zero estimate that cost anything is infinitely wrong; reporting 1 keeps
-  // the number finite and still trips any tolerance a caller would set.
+  // A zero estimate that cost anything is infinitely wrong. `drift` reports 1
+  // to keep the number finite and comparable, but the flag does NOT rest on
+  // that: `drift > tolerance` is false at `tolerance: 1`, which a coarse
+  // estimator would plausibly set, so the case that most needs reporting was
+  // the one case silently passing. The comment here used to claim 1 "trips any
+  // tolerance a caller would set", which was wrong at exactly one value.
+  const unestimated = i.estimated === 0 && i.actual !== 0
   const drift =
     i.estimated === 0
       ? i.actual === 0
         ? 0
         : 1
       : Math.abs(correction) / i.estimated
-  return { windows: settled, drift, beyondTolerance: drift > i.tolerance }
+  return {
+    windows: settled,
+    drift,
+    beyondTolerance: unestimated || drift > i.tolerance,
+  }
 }
