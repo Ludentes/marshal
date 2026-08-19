@@ -127,6 +127,22 @@ function firstBlocker(
     if (budget) {
       known = true
       const price = costOf(job, w.cost)
+      // A price that is not a number is the caller breaking its own contract,
+      // so it THROWS, exactly as a rank() that drops a job does. It is not a
+      // scarcity condition and there is no honest `Blocked` for it:
+      // `budget-exhausted` would claim a full window and name a reset that
+      // does not exist, and `custom` is construct-only for consumers.
+      //
+      // Failing closed per-job is not enough either. `spent + NaN > limit` is
+      // false for every window, so a NaN price granted the job and wrote
+      // `spent: NaN`, after which every later job in the pass was granted too
+      // — one bad price silently disabled the budget for the whole pass, and
+      // a per-job refusal nobody reads is how that stays invisible.
+      if (!Number.isFinite(price)) {
+        throw new Error(
+          `cost for job ${job.id} on "${resource}" must be a finite number, got ${price}`,
+        )
+      }
       // Every window, not the loosest. The tightest one is the allowance; the
       // others are burst limits, and satisfying only a burst limit is how a
       // scheduler sprints into a wall on day two.
@@ -251,6 +267,26 @@ export function pick(i: PickInput): PickResult {
   // consumer has no way to notice. Refusing it is not available either, since
   // there is no honest `Blocked` for "the policy did not mention it".
   const returned = new Set(ranked.map((r) => r.job.id))
+  // Onto is not enough; it must be a permutation. A rank function that
+  // concatenates two lists returns a job twice, the dropped-set check passes
+  // because every job did come back, and the loop then grants the SAME job
+  // twice: two Grants the consumer may launch twice, a double budget debit,
+  // and two holders. The symmetric case — two distinct jobs sharing an id —
+  // loses one of them silently, which is the exact loss the check below was
+  // written to make impossible.
+  if (returned.size !== ranked.length) {
+    const seen = new Set<string>()
+    const twice = new Set<string>()
+    for (const { job } of ranked) {
+      if (seen.has(job.id)) twice.add(job.id)
+      seen.add(job.id)
+    }
+    throw new Error(
+      `rank() must return each job exactly once; it returned ${[...twice].join(
+        ", ",
+      )} twice`,
+    )
+  }
   const dropped = i.jobs.filter((j) => !returned.has(j.id))
   if (dropped.length > 0) {
     throw new Error(
@@ -311,6 +347,15 @@ export function reconcile(
   windows: BudgetWindow[],
   i: ReconcileInput,
 ): Reconciliation {
+  // An unusable settlement changes nothing and SHOUTS. A NaN actual gave
+  // every window `spent: NaN` — Math.max(0, NaN) is NaN, so the clamp below
+  // does not filter it — with `drift: NaN` and `beyondTolerance: false`,
+  // because `NaN > tolerance` is false. The caller persisted corrupted
+  // windows and was told the estimate was within tolerance, which is the one
+  // case this function exists to report.
+  if (!Number.isFinite(i.actual) || !Number.isFinite(i.estimated)) {
+    return { windows, drift: 1, beyondTolerance: true }
+  }
   const correction = i.actual - i.estimated
   const settled = windows.map((w) => ({
     ...w,

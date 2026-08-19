@@ -457,3 +457,141 @@ describe("pick, the findings from review", () => {
     expect(result.beyondTolerance).toBe(true)
   })
 })
+
+describe("non-finite numbers fail closed", () => {
+  // Three findings from the 2026-08-19 medium review. A NaN is not an
+  // unlikely input here: the next caller derives a CostFn from a provider
+  // quota reading, and one absent field in that payload produces one.
+
+  it("throws when a job's price is not a number", () => {
+    // Measured before the fix: with a window at 9 of 10 and price NaN, BOTH
+    // queued jobs were granted and nothing was refused, because
+    // `spent + NaN > limit` is false. `consume` then wrote `spent: NaN`, so
+    // every later job in the same pass was granted too — a budget that has
+    // stopped counting is not a budget.
+    //
+    // It throws rather than refusing because there is no honest `Blocked` for
+    // it: the window may well have room, `budget-exhausted` would name a
+    // reset that does not exist, and `custom` is construct-only for
+    // consumers. A broken CostFn is a caller contract violation, which is
+    // what the rank() guard already throws for.
+    expect(() =>
+      pick({
+        jobs: [
+          { id: "a", needs: ["prov"] },
+          { id: "b", needs: ["prov"] },
+        ],
+        capacity: {
+          budget: {
+            prov: [{ name: "weekly", limit: 10, spent: 9, resets: 100 }],
+          },
+        },
+        now: 0,
+        cost: () => Number.NaN,
+        rank: (jobs) =>
+          jobs.map((job, n) => ({ job, rank: n, why: { base: n } })),
+      }),
+    ).toThrow(/finite number/)
+  })
+
+  it("throws on an infinite price too", () => {
+    // Infinity already failed closed on its own — `spent + Infinity > limit`
+    // is true — so this window was refused rather than granted. It still
+    // throws now, because a CostFn returning Infinity is the same broken
+    // contract and a refusal would report scarcity that is not there.
+    expect(() =>
+      pick({
+        jobs: [{ id: "a", needs: ["prov"] }],
+        capacity: {
+          budget: {
+            prov: [{ name: "weekly", limit: 10, spent: 0, resets: 1 }],
+          },
+        },
+        now: 0,
+        cost: () => Number.POSITIVE_INFINITY,
+        rank: (jobs) => jobs.map((job) => ({ job, rank: 0, why: { base: 0 } })),
+      }),
+    ).toThrow(/finite number/)
+  })
+
+  it("still grants a finite price", () => {
+    const out = pick({
+      jobs: [{ id: "a", needs: ["prov"] }],
+      capacity: {
+        budget: { prov: [{ name: "weekly", limit: 10, spent: 0, resets: 1 }] },
+      },
+      now: 0,
+      cost: () => 1,
+      rank: (jobs) => jobs.map((job) => ({ job, rank: 0, why: { base: 0 } })),
+    })
+    expect(out.granted).toHaveLength(1)
+  })
+
+  it("reconcile reports rather than swallows an unusable actual", () => {
+    // Measured before the fix: a NaN actual gave every window `spent: NaN`
+    // (Math.max(0, NaN) is NaN), `drift: NaN`, and `beyondTolerance: false`
+    // because `NaN > tolerance` is false — so the caller persisted corrupted
+    // windows and was told the estimate was fine. That is the one case this
+    // function exists to report.
+    const before = [{ name: "weekly", limit: 10, spent: 5, resets: 1 }]
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      const out = reconcile(before, {
+        estimated: 1,
+        actual: bad,
+        tolerance: 0.2,
+      })
+      expect(out.windows).toEqual(before)
+      expect(out.beyondTolerance).toBe(true)
+    }
+  })
+
+  it("reconcile reports an unusable estimate the same way", () => {
+    const before = [{ name: "weekly", limit: 10, spent: 5, resets: 1 }]
+    const out = reconcile(before, {
+      estimated: Number.NaN,
+      actual: 1,
+      tolerance: 0.2,
+    })
+    expect(out.windows).toEqual(before)
+    expect(out.beyondTolerance).toBe(true)
+  })
+})
+
+describe("rank must be a permutation, not merely onto", () => {
+  it("throws when rank returns the same job twice", () => {
+    // Measured before the fix: granted was ['a', 'a'] — two Grants for one
+    // job, which the consumer may launch twice, with a double budget debit
+    // and two holders. The dropped-set check could not see it: every job it
+    // was given did come back.
+    expect(() =>
+      pick({
+        jobs: [{ id: "a", needs: ["lane"] }],
+        capacity: { counting: { lane: { limit: 5, holders: [] } } },
+        now: 0,
+        rank: (jobs) =>
+          [...jobs, ...jobs].map((job, n) => ({
+            job,
+            rank: n,
+            why: { base: n },
+          })),
+      }),
+    ).toThrow(/twice|duplicate/i)
+  })
+
+  it("throws when two distinct jobs share an id", () => {
+    // The symmetric loss: the dropped-set is keyed on id, so one of these is
+    // silently discarded while the guard stays green.
+    expect(() =>
+      pick({
+        jobs: [
+          { id: "a", needs: ["lane"] },
+          { id: "a", needs: ["lane"] },
+        ],
+        capacity: { counting: { lane: { limit: 5, holders: [] } } },
+        now: 0,
+        rank: (jobs) =>
+          jobs.map((job, n) => ({ job, rank: n, why: { base: n } })),
+      }),
+    ).toThrow(/twice|duplicate/i)
+  })
+})
