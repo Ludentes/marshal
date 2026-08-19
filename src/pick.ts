@@ -11,11 +11,29 @@ export interface CountingState {
   holders: Holder[]
 }
 
+/**
+ * One replenishing allowance over one resource.
+ *
+ * Several of these cover a single resource, because a provider publishes more
+ * than one and they disagree about what is scarce. Measured 2026-08-18: the
+ * weekly window bound 6.7x harder than the 5-hour one, and pacing to the
+ * 5-hour figure would have drained the week in a day.
+ */
+export interface BudgetWindow {
+  name: string
+  limit: number
+  spent: number
+  /** When this window replenishes. The caller's clock, the caller's units. */
+  resets: number
+}
+
 export interface Capacity {
   counting?: Record<string, CountingState>
   exclusive?: Record<string, { by?: Holder }>
   /** A resource that exists but is not takeable yet. Breakers land here. */
   unavailable?: Record<string, { until?: number }>
+  /** A set of windows per resource. Admission must satisfy every one. */
+  budget?: Record<string, BudgetWindow[]>
 }
 
 export interface PickInput {
@@ -47,7 +65,14 @@ interface Working {
   counting: Map<string, CountingState>
   exclusive: Map<string, Holder | undefined>
   unavailable: Record<string, { until?: number }>
+  budget: Map<string, BudgetWindow[]>
+  cost?: CostFn
   now: number
+}
+
+/** An unpriced job is free. Guessing a number here would be a policy. */
+function costOf(job: Job, cost?: CostFn): number {
+  return job.cost ?? cost?.(job) ?? 0
 }
 
 /**
@@ -73,6 +98,28 @@ function firstBlocker(job: Job, w: Working): Blocked | undefined {
     if (w.exclusive.has(resource)) {
       const by = w.exclusive.get(resource)
       if (by) return { kind: "resource-held", resource, by }
+      continue
+    }
+
+    const budget = w.budget.get(resource)
+    if (budget) {
+      const price = costOf(job, w.cost)
+      // Every window, not the loosest. The tightest one is the allowance; the
+      // others are burst limits, and satisfying only a burst limit is how a
+      // scheduler sprints into a wall on day two.
+      const short = budget.filter((win) => win.spent + price > win.limit)
+      if (short.length > 0) {
+        // The LATEST reset among the short windows, not the first one found.
+        // `find` would answer whichever the array happened to list first, so
+        // an operator told "retry in five hours" while the weekly allowance is
+        // gone comes back to the same refusal. That is the loose-window error
+        // this whole kind exists to prevent, one level further down.
+        const resets = short.reduce(
+          (late, win) => Math.max(late, win.resets),
+          0,
+        )
+        return { kind: "budget-exhausted", resource, resets }
+      }
       continue
     }
 
@@ -105,6 +152,12 @@ function consume(job: Job, w: Working): void {
   for (const resource of job.needs) {
     if (w.exclusive.has(resource)) {
       w.exclusive.set(resource, asHolder(job, w.now))
+      continue
+    }
+    const budget = w.budget.get(resource)
+    if (budget) {
+      const price = costOf(job, w.cost)
+      for (const win of budget) win.spent += price
       continue
     }
     const counted = w.counting.get(resource)
@@ -140,6 +193,15 @@ export function pick(i: PickInput): PickResult {
       ]),
     ),
     unavailable: i.capacity.unavailable ?? {},
+    // Copied per window: `spent` is incremented in place, so without this,
+    // asking whether a job would be admitted charges the caller for it.
+    budget: new Map(
+      Object.entries(i.capacity.budget ?? {}).map(([name, wins]) => [
+        name,
+        wins.map((win) => ({ ...win })),
+      ]),
+    ),
+    cost: i.cost,
     now: i.now,
   }
 
@@ -157,4 +219,52 @@ export function pick(i: PickInput): PickResult {
   }
 
   return { granted, refused }
+}
+
+export interface ReconcileInput {
+  estimated: number
+  actual: number
+  /** Fractional drift above which the caller is told. 0.5 is 50% out. */
+  tolerance: number
+}
+
+export interface Reconciliation {
+  windows: BudgetWindow[]
+  /** |actual - estimated| / estimated, as a fraction. */
+  drift: number
+  beyondTolerance: boolean
+}
+
+/**
+ * Settle an estimate against what a job actually cost.
+ *
+ * This is the difference between a thermostat and a thermometer. A budget
+ * debited only by the estimate never learns the estimate is wrong: a CostFn
+ * that systematically underestimates keeps granting while the real window
+ * drains, and the failure surfaces as a provider outage rather than as the
+ * admission error it is.
+ *
+ * Returns new windows rather than editing the ones handed in, for the same
+ * reason `pick` copies: the caller decides what to persist.
+ */
+export function reconcile(
+  windows: BudgetWindow[],
+  i: ReconcileInput,
+): Reconciliation {
+  const correction = i.actual - i.estimated
+  const settled = windows.map((w) => ({
+    ...w,
+    // Never below zero: an overestimate larger than anything ever debited
+    // would otherwise manufacture allowance out of a bookkeeping error.
+    spent: Math.max(0, w.spent + correction),
+  }))
+  // A zero estimate that cost anything is infinitely wrong; reporting 1 keeps
+  // the number finite and still trips any tolerance a caller would set.
+  const drift =
+    i.estimated === 0
+      ? i.actual === 0
+        ? 0
+        : 1
+      : Math.abs(correction) / i.estimated
+  return { windows: settled, drift, beyondTolerance: drift > i.tolerance }
 }
