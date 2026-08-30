@@ -67,8 +67,30 @@ const result = pick({
 })
 ```
 
+That specifier is the package's declared export, not an npm coordinate —
+see [Status](#status).
+
 ## Status
 
-Private, unpublished, and consumed by nobody. Galatea holds the authoritative
-copy at `scripts/marshal/`; this repository is regenerated from it and must not
-be edited directly.
+**Not on npm, and not built.** `package.json` keeps `"private": true` so an
+accidental `npm publish` fails rather than succeeds, and `tsconfig.json` sets
+`noEmit` — the subpath exports point at TypeScript source, which is what
+Galatea consumes through `tsx` and `vitest`. Reading this repository is the
+supported use today; a consumer that needs a compiled artifact should open an
+issue rather than assume one is coming.
+
+**Generated, not edited.** Galatea holds the authoritative copy at
+`scripts/marshal/`, and this repository is regenerated from it by
+`git filter-repo` over both the old and the current paths. `upstream` is pure
+filter-repo output and only ever fast-forwards; `main` is `upstream` merged
+with root-only scaffolding — the two sides touch disjoint paths, so no refresh
+has ever needed a force-push.
+
+The practical consequence: an edit made directly to `src/` here is discarded by
+the next refresh. Issues and discussion are welcome; a patch to `src/` has to
+be applied upstream to survive, so say what should change and why rather than
+sending the diff.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

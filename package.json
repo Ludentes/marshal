@@ -2,6 +2,12 @@
   "name": "@ludentes/marshal",
   "version": "0.0.0",
   "private": true,
+  "license": "MIT",
+  "description": "Admissibility and record: allocators, pick(), explained refusals",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ludentes/marshal.git"
+  },
   "type": "module",
   "sideEffects": false,
   "packageManager": "pnpm@10.33.0",
