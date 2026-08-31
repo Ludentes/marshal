@@ -14,15 +14,18 @@
   "exports": {
     "./permit": {
       "types": "./dist/permit.d.ts",
-      "import": "./dist/permit.js"
+      "import": "./dist/permit.js",
+      "require": "./dist/permit.js"
     },
     "./pick": {
       "types": "./dist/pick.d.ts",
-      "import": "./dist/pick.js"
+      "import": "./dist/pick.js",
+      "require": "./dist/pick.js"
     },
     "./types": {
       "types": "./dist/types.d.ts",
-      "import": "./dist/types.js"
+      "import": "./dist/types.js",
+      "require": "./dist/types.js"
     }
   },
   "scripts": {

@@ -22,8 +22,9 @@ Not on npm. `package.json` keeps `"private": true` so an accidental
 pnpm add git+https://github.com/Ludentes/marshal.git
 ```
 
-No credential needed, and no build step: `dist/` is committed. ESM only, no
-dependencies.
+No credential needed and no build step: `dist/` is committed. Works with npm
+and pnpm alike. ESM, no dependencies, verified on Node 20, 22 and 24 —
+CommonJS consumers can `require()` it on Node 22 and later.
 
 **The version is `0.0.0` and stays there.** There is no release cadence and no
 semver promise: a git install resolves to whatever `main` is when you run it.

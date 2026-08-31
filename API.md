@@ -10,8 +10,13 @@ import { BLOCKED_KINDS } from "@ludentes/marshal/types"
 import type { Blocked, Holder, Job, RankFn, CostFn } from "@ludentes/marshal/types"
 ```
 
-ESM only, compiled to ES2022. No dependencies: the package imports nothing
-outside `node:`, and `boundary.test.ts` fails the build if that changes.
+**ESM, and verified on Node 20, 22 and 24.** No dependencies: the package
+imports nothing outside `node:`, and `boundary.test.ts` fails the build if that
+changes.
+
+A CommonJS consumer can `require()` these subpaths on Node 22 and later, where
+Node supports requiring an ES module. On Node 20 it raises `ERR_REQUIRE_ESM` —
+import it instead, or upgrade.
 
 Every example below is executable as written, and its output is what it
 actually printed.

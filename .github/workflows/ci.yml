@@ -19,3 +19,23 @@ jobs:
       - run: pnpm test
       - run: pnpm typecheck
       - run: pnpm check
+
+  # The README claims Node 20, 22 and 24, and that CommonJS can require() it on
+  # 22+. A claim in a README that CI does not run is a claim.
+  runtimes:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # By package name, not by path: this resolves through the exports map,
+      # which is the thing a consumer actually hits.
+      - name: import every export
+        run: node --input-type=module -e "await Promise.all(['permit','pick','types'].map((m) => import('@ludentes/marshal/' + m)))"
+      - name: require every export (node 22+ only)
+        if: matrix.node != '20'
+        run: node --input-type=commonjs -e "['permit','pick','types'].forEach((m) => require('@ludentes/marshal/' + m))"
