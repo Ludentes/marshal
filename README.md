@@ -72,12 +72,26 @@ see [Status](#status).
 
 ## Status
 
-**Not on npm, and not built.** `package.json` keeps `"private": true` so an
-accidental `npm publish` fails rather than succeeds, and `tsconfig.json` sets
-`noEmit` — the subpath exports point at TypeScript source, which is what
-Galatea consumes through `tsx` and `vitest`. Reading this repository is the
-supported use today; a consumer that needs a compiled artifact should open an
-issue rather than assume one is coming.
+**Not on npm, but built.** `package.json` keeps `"private": true` so an
+accidental `npm publish` fails rather than succeeds. Install it from this
+repository:
+
+```bash
+pnpm add git+https://github.com/Ludentes/marshal.git
+```
+
+`dist/` is **committed**, and the subpath exports point at it. That is not a
+preference: pnpm gates install-time build scripts behind
+`onlyBuiltDependencies`, so a `prepare` script would leave a consumer with no
+`dist/` and no error. Exports onto TypeScript source do not work either —
+measured against an agent runtime that marks anything under `node_modules`
+external, where Node then refuses to strip types inside `node_modules` at all.
+CI rebuilds `dist/` and fails if it differs from what is committed, and imports
+every export in plain Node so an unloadable build cannot pass.
+
+**A worked reference.** [`Ludentes/sieve`](https://github.com/Ludentes/sieve)
+uses this package to admit concurrent agent sessions against a shared
+workspace.
 
 **Generated, not edited.** Galatea holds the authoritative copy at
 `scripts/marshal/`, and this repository is regenerated from it by
