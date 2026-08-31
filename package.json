@@ -45,6 +45,7 @@
     "src",
     "README.md",
     "API.md",
+    "CHANGELOG.md",
     "LICENSE"
   ]
 }
