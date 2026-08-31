@@ -22,5 +22,5 @@
   "javascript": {
     "formatter": { "quoteStyle": "double", "semicolons": "asNeeded" }
   },
-  "files": { "includes": ["**", "!**/node_modules"] }
+  "files": { "includes": ["**", "!**/node_modules", "!dist"] }
 }
