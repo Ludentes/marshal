@@ -41,6 +41,7 @@
     "dist",
     "src",
     "README.md",
+    "API.md",
     "LICENSE"
   ]
 }
