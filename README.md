@@ -25,6 +25,14 @@ pnpm add git+https://github.com/Ludentes/marshal.git
 No credential needed, and no build step: `dist/` is committed. ESM only, no
 dependencies.
 
+**The version is `0.0.0` and stays there.** There is no release cadence and no
+semver promise: a git install resolves to whatever `main` is when you run it.
+If that matters, pin the commit —
+`pnpm add git+https://github.com/Ludentes/marshal.git#<sha>` — and read
+[Status](#status) for what does and does not change here. Adding an entry to
+`BLOCKED_KINDS` is the one change that would break a consumer silently, so it
+is guarded by a compile-time tie between the const and the union.
+
 ## Sixty seconds
 
 Two jobs want one repository. One gets it; the other is told who has it.
