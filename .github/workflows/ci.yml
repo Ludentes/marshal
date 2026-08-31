@@ -11,6 +11,11 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --no-frozen-lockfile
+      - run: pnpm build
+      - name: dist/ must match a fresh build
+        run: git diff --exit-code dist
+      - name: every export must load in plain node
+        run: node --input-type=module -e "await Promise.all(['permit','pick','types'].map((m) => import('./dist/' + m + '.js')))"
       - run: pnpm test
       - run: pnpm typecheck
       - run: pnpm check
