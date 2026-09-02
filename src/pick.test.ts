@@ -1000,3 +1000,74 @@ describe("one price per job per pass", () => {
     expect(seen).toEqual([])
   })
 })
+
+describe("an incoming holder's units are the caller's contract too", () => {
+  // `need.units` is validated by `unitsOf` and prices by `costOf`; the units
+  // on holders the CALLER hands in were validated by nothing. A consumer
+  // building `CountingState` from a parsed reading — JSON, a report store, an
+  // on-disk shape written before `CountingHolder` existed — produced a holder
+  // with `units: undefined`, so `taken` was NaN, `NaN + units > limit` was
+  // false for every job, and every job in the pass was granted on a saturated
+  // resource. That is the budget branch's own "one bad price silently
+  // disabled the budget for the whole pass", reintroduced on the counting
+  // path: before units, the check was `holders.length >= limit`, which
+  // structurally could not be NaN.
+  const stale = {
+    holder: { id: "z", what: "written before units existed", since: "0" },
+  } as unknown as {
+    holder: { id: string; what: string; since: string }
+    units: number
+  }
+
+  it("throws on a holder whose units are missing", () => {
+    expect(() =>
+      pick({
+        jobs: [job("a", "lane"), job("b", "lane")],
+        capacity: { counting: { lane: { limit: 1, holders: [stale] } } },
+        rank: asGiven,
+        now: 0,
+      }),
+    ).toThrow(/units.*holder z.*"lane"/)
+  })
+
+  it("throws at the boundary, before any job is looked at", () => {
+    // The throw must land while building the working copy, not as a phantom
+    // grant halfway down the pass.
+    let ranked = false
+    const watched: RankFn = (jobs, now) => {
+      ranked = true
+      return asGiven(jobs, now)
+    }
+    expect(() =>
+      pick({
+        jobs: [job("a", "lane")],
+        capacity: { counting: { lane: { limit: 1, holders: [stale] } } },
+        rank: watched,
+        now: 0,
+      }),
+    ).toThrow(/units/)
+    expect(ranked).toBe(false)
+  })
+
+  it("throws on a fractional or zero holder count", () => {
+    for (const units of [0, 1.5, -1]) {
+      expect(() =>
+        pick({
+          jobs: [job("a", "lane")],
+          capacity: {
+            counting: {
+              lane: {
+                limit: 4,
+                holders: [
+                  { holder: { id: "z", what: "w", since: "0" }, units },
+                ],
+              },
+            },
+          },
+          rank: flat,
+          now: 0,
+        }),
+      ).toThrow(/units/)
+    }
+  })
+})

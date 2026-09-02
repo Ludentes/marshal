@@ -143,15 +143,23 @@ function costOf(
  * contract, so it THROWS. `0` would consume nothing while passing the check,
  * and a fraction would make `taken` drift away from any number a holder
  * released.
+ *
+ * One rule, stated once, because two places take a unit count from the
+ * caller: the needs on a job and the holders on a `CountingState`. `where`
+ * names whichever one it was, since the throw is only useful if it says which
+ * number to go and fix.
  */
-function unitsOf(need: Need): number {
-  const units = need.units ?? 1
+function checkUnits(units: number, where: string): number {
   if (!Number.isInteger(units) || units < 1) {
     throw new Error(
-      `units for "${need.resource}" must be a positive integer, got ${units}`,
+      `units for ${where} must be a positive integer, got ${units}`,
     )
   }
   return units
+}
+
+function unitsOf(need: Need): number {
+  return checkUnits(need.units ?? 1, `"${need.resource}"`)
 }
 
 /**
@@ -371,10 +379,26 @@ function resolveNeeds(job: Job): Need[] {
  */
 export function pick(i: PickInput): PickResult {
   const w: Working = {
+    // Holder units are checked HERE, at the boundary, and not where they are
+    // summed. `counted.holders` comes straight from the caller, and nothing
+    // validated it: a `CountingState` rebuilt from a parsed reading — JSON, a
+    // report store, a shape written before `CountingHolder` existed — carried
+    // `units: undefined`, so `taken` was NaN, `NaN + units > limit` was false
+    // for every job, and every job in the pass was granted on a saturated
+    // resource. That is the budget branch's "one bad price silently disabled
+    // the budget for the whole pass", on the counting path; before units the
+    // check was `holders.length >= limit` and structurally could not be NaN.
+    // A throw naming the resource and the holder beats a phantom grant.
     counting: new Map(
       Object.entries(i.capacity.counting ?? {}).map(([name, c]) => [
         name,
-        { limit: c.limit, holders: [...c.holders] },
+        {
+          limit: c.limit,
+          holders: c.holders.map((h) => {
+            checkUnits(h.units, `holder ${h.holder?.id} of "${name}"`)
+            return h
+          }),
+        },
       ]),
     ),
     exclusive: new Map(
