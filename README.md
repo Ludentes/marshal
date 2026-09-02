@@ -8,6 +8,10 @@ an exported name carries one of six domain nouns.
 
 Extracted from Galatea, where it runs the admission half of an agent scheduler.
 
+- **[How it works](ARCHITECTURE.md)** — the model: what it is for, the two
+  layers, the resource families, and what is *not* guaranteed
+- **[Putting it in your project](INTEGRATING.md)** — the loop, naming your
+  resources, budgets, ranking, and what changes as you add machines
 - **[API reference](API.md)** — every export, with runnable examples
 - **[Changelog](CHANGELOG.md)** — keyed by commit, since there are no releases
 - **[`Ludentes/sieve`](https://github.com/Ludentes/sieve)** — a worked
