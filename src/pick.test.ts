@@ -1071,3 +1071,88 @@ describe("an incoming holder's units are the caller's contract too", () => {
     }
   })
 })
+
+describe("an incoherent job costs no completed work", () => {
+  // `resolveNeeds` threw from inside the grant loop, so a job whose needs
+  // name one resource two different ways aborted the pass after earlier jobs
+  // had already been granted — and since `pick()` returns nothing on a throw,
+  // those grants were lost and nothing launched. Under NEVER QUEUE the caller
+  // re-asks and hits the same malformed row on every pass, so the good jobs
+  // never run. Before units and amounts this path was `[...new Set(needs)]`
+  // and could not throw at all.
+  //
+  // The throw STAYS — it is a caller-contract violation and there is no
+  // honest `Blocked` for it — but it lands before anything has been granted.
+  const bad: Job = {
+    id: "bad",
+    needs: [
+      { resource: "lane", units: 1 },
+      { resource: "lane", units: 2 },
+    ],
+  }
+
+  it("throws before the first grant, not halfway down the pass", () => {
+    // A throw returns nothing, so "ok1's grant was lost" is not directly
+    // observable from outside — what IS observable is whether the pass got
+    // as far as pricing ok1 before it gave up. Priced means granted-then-
+    // discarded; not priced means the pass ended before it did any work.
+    const priced: string[] = []
+    expect(() =>
+      pick({
+        jobs: [job("ok1", "tokens"), bad],
+        capacity: {
+          counting: { lane: { limit: 5, holders: [] } },
+          budget: {
+            tokens: [{ name: "day", limit: 100, spent: 0, resets: 1 }],
+          },
+        },
+        rank: asGiven,
+        now: 0,
+        cost: (j) => {
+          priced.push(j.id)
+          return 1
+        },
+      }),
+    ).toThrow(/two different ways/)
+    expect(priced).toEqual([])
+  })
+
+  it("throws whatever the incoherent job's rank position", () => {
+    // Last in rank order is the case that used to lose the most work.
+    expect(() =>
+      pick({
+        jobs: [bad, job("ok1", "lane")],
+        capacity: { counting: { lane: { limit: 5, holders: [] } } },
+        rank: asGiven,
+        now: 0,
+      }),
+    ).toThrow(/two different ways/)
+  })
+
+  it("still prices each job on its own, one memo per job", () => {
+    // Resolving needs up front must not hoist the price memo with it: a
+    // shared memo would charge the second job the first one's rate.
+    const seen: number[] = []
+    let next = 10
+    const result = pick({
+      jobs: [job("a", "tokens"), job("b", "tokens")],
+      capacity: {
+        budget: {
+          tokens: [{ name: "day", limit: 100, spent: 0, resets: 1 }],
+        },
+      },
+      rank: asGiven,
+      now: 0,
+      cost: () => {
+        const price = next
+        next += 20
+        seen.push(price)
+        return price
+      },
+    })
+    expect(result.granted.map((g) => g.job.id)).toEqual(["a", "b"])
+    // Two jobs, two distinct prices — each asked for once and reused within
+    // its own job for the check and the debit.
+    expect(seen).toEqual([10, 30])
+  })
+})

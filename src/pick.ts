@@ -462,8 +462,22 @@ export function pick(i: PickInput): PickResult {
     )
   }
 
-  for (const { job, rank } of ranked) {
-    const needs = resolveNeeds(job)
+  // Resolved BEFORE the loop, with the other pass-wide contract checks, and
+  // for the same reason. `resolveNeeds` throws on a job whose needs name one
+  // resource two different ways, and thrown from inside the loop it aborted
+  // the pass after earlier jobs had already been granted — `pick` returns
+  // nothing on a throw, so those grants were lost and nothing launched, and
+  // under NEVER QUEUE the caller re-asks and meets the same malformed row
+  // every pass. It stays a throw: it is the caller breaking its own contract
+  // and there is no honest `Blocked` for it. Hoisting only makes it
+  // deterministic and costs no completed work.
+  //
+  // The price memo stays INSIDE the loop. It is per-job by contract — one
+  // shared across jobs would charge the second job the first one's rate,
+  // which is the bug `costOf`'s own doc comment records.
+  const resolved = ranked.map((r) => ({ ...r, needs: resolveNeeds(r.job) }))
+
+  for (const { job, rank, needs } of resolved) {
     const priced: PriceMemo = new Map()
     const blocked = firstBlocker(job, needs, w, priced)
     if (blocked) {
