@@ -114,8 +114,11 @@ families are not decoration; they decide how you must treat each one.
 back**. If you forget, it leaks and nothing recovers it.
 
 **Consumable resources** are spent, not borrowed. Nothing gives them back; time
-replenishes them. They cannot leak — but if your estimate of what a job costs is
-wrong, the allowance quietly lies to you.
+replenishes them. They still strand — a job that is charged and then crashes
+leaves that charge standing until the window resets — but the stranding is
+bounded by the window and heals itself, where a leaked reusable resource is
+stranded forever. The subtler risk is that if your estimate of what a job costs
+is wrong, the allowance quietly lies to you.
 
 | Kind | Family | Question it answers | Refusal |
 |---|---|---|---|
@@ -137,10 +140,12 @@ consumable one against what it actually cost. They are not alternatives. If you
 use both families, you need both.
 
 They also fail differently, which is worth knowing before you pick which to
-model something as. A leaked reusable resource strands **one** thing, loudly —
-work stops and someone notices. A mis-estimated consumable resource
-over-grants **everything**, silently, until the provider starts refusing you and
-it looks like an outage rather than the admission error it is.
+model something as. A leaked reusable resource strands **one** thing forever,
+loudly — work stops and someone notices. A stranded consumable charge heals at
+the next window, but a *mis-estimated* one over-grants **everything**, silently,
+until the provider starts refusing you and it looks like an outage rather than
+the admission error it is. That is why `reconcile()` exists and why nothing
+equivalent exists for the reusable side.
 
 ## What a refusal means
 
