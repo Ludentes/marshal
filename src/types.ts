@@ -18,10 +18,13 @@ export interface Holder {
 /**
  * One resource a job asks for, and how much of it.
  *
- * A bare `{ resource }` is one unit, unpriced — exactly what a plain string
- * meant before. `units` and `amount` each apply to the capacity map the name
- * appears in, which is the rule `firstBlocker` already follows: every map is
- * consulted and no branch exits the iteration early.
+ * A bare `{ resource }` is one unit at whatever the injected {@link CostFn}
+ * says the resource costs — exactly what a plain string meant before. It is
+ * not *unpriced*: with a `CostFn` supplied it is priced BY the `CostFn`, and
+ * only a caller that injects none gets a price of zero. `units` and `amount`
+ * each apply to the capacity map the name appears in, which is the rule
+ * `firstBlocker` already follows: every map is consulted and no branch exits
+ * the iteration early.
  */
 export interface Need {
   resource: string

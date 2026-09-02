@@ -743,6 +743,43 @@ describe("need resolution", () => {
     expect(result.granted[0]?.holds).toEqual(["lane"])
   })
 
+  it("counts an omitted amount as different, and an omitted units as same", () => {
+    // The asymmetry is load-bearing and easy to read as a bug, so it is
+    // pinned. An omitted `units` genuinely EQUALS 1, so the two entries agree
+    // and coalesce. An omitted `amount` means "ask the CostFn", which is not
+    // the same request as "charge zero" — the CostFn may return anything —
+    // so the two entries disagree and the job is refused as incoherent.
+    const coalesced = pick({
+      jobs: [
+        {
+          id: "j",
+          needs: [{ resource: "t" }, { resource: "t", units: 1 }],
+        },
+      ],
+      capacity: { counting: { t: { limit: 1, holders: [] } } },
+      rank: flat,
+      now: 0,
+    })
+    // One entry, not two: coalesced into a single need.
+    expect(coalesced.granted.map((g) => g.holds)).toEqual([["t"]])
+
+    expect(() =>
+      pick({
+        jobs: [
+          {
+            id: "j",
+            needs: [{ resource: "t" }, { resource: "t", amount: 0 }],
+          },
+        ],
+        capacity: {
+          budget: { t: [{ name: "w", limit: 10, spent: 0, resets: 1 }] },
+        },
+        rank: flat,
+        now: 0,
+      }),
+    ).toThrow(/two different ways/)
+  })
+
   it("throws when one job asks for one resource two different ways", () => {
     expect(() =>
       pick({

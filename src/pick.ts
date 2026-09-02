@@ -321,6 +321,16 @@ function consume(job: Job, needs: Need[], w: Working, priced: PriceMemo): void {
  * Repeats that DISAGREE throw. Two entries naming one resource with different
  * units or amounts is the caller not knowing what it needs, and there is no
  * honest `Blocked` for it — the same reason a non-finite price throws.
+ *
+ * The two comparisons are deliberately ASYMMETRIC, and it is not a slip.
+ * `units` is normalized before comparing, because an omitted `units` genuinely
+ * EQUALS 1: `{t}` and `{t, units: 1}` are the same request, so they coalesce.
+ * `amount` is compared raw, because an omitted `amount` means "ask the
+ * CostFn", and that is a different request than charging zero — the CostFn
+ * may return anything. So `{t}` beside `{t, amount: 0}` is two callers asking
+ * for two different things and throws, while `{t}` beside `{t, units: 1}` does
+ * not. Pinned by its own test, since a reader meeting it cold reads it as a
+ * bug.
  */
 function resolveNeeds(job: Job): Need[] {
   const byName = new Map<string, Need>()
