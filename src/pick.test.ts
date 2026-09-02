@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest"
 import { pick, reconcile } from "./pick"
 import type { Job, RankFn } from "./types"
 
-const job = (id: string, ...needs: string[]): Job => ({ id, needs })
+const job = (id: string, ...needs: string[]): Job => ({
+  id,
+  needs: needs.map((resource) => ({ resource })),
+})
 
 /** Simplest possible policy: the order given. Ranking is the consumer's. */
 const asGiven: RankFn = (jobs) =>
@@ -12,6 +15,9 @@ const asGiven: RankFn = (jobs) =>
     rank: jobs.length - index,
     why: { base: jobs.length - index },
   }))
+
+const flat: RankFn = (jobs) =>
+  jobs.map((job) => ({ job, rank: 0, why: { base: 0 } }))
 
 describe("pick", () => {
   it("grants up to a counting resource's limit and refuses by name", () => {
@@ -206,7 +212,7 @@ describe("pick with a budget", () => {
     // The 5-hour window has 100 free and would say yes on its own. The weekly
     // window has 17. Admission must satisfy every window, not the loosest.
     const result = pick({
-      jobs: [{ id: "a", needs: ["tokens"], cost: 37.5 }],
+      jobs: [{ id: "a", needs: [{ resource: "tokens" }], cost: 37.5 }],
       capacity: { budget: windows() },
       rank: asGiven,
       now: 1000,
@@ -228,7 +234,7 @@ describe("pick with a budget", () => {
     // one level down inside it: a `find` would answer 18_000 here purely
     // because of array order.
     const result = pick({
-      jobs: [{ id: "a", needs: ["tokens"], cost: 60 }],
+      jobs: [{ id: "a", needs: [{ resource: "tokens" }], cost: 60 }],
       capacity: {
         budget: {
           tokens: [
@@ -250,9 +256,9 @@ describe("pick with a budget", () => {
   it("grants when every window fits, and debits all of them", () => {
     const result = pick({
       jobs: [
-        { id: "a", needs: ["tokens"], cost: 7.5 },
-        { id: "b", needs: ["tokens"], cost: 7.5 },
-        { id: "c", needs: ["tokens"], cost: 7.5 },
+        { id: "a", needs: [{ resource: "tokens" }], cost: 7.5 },
+        { id: "b", needs: [{ resource: "tokens" }], cost: 7.5 },
+        { id: "c", needs: [{ resource: "tokens" }], cost: 7.5 },
       ],
       capacity: { budget: windows() },
       rank: asGiven,
@@ -265,7 +271,7 @@ describe("pick with a budget", () => {
 
   it("uses the injected CostFn when the job carries no cost", () => {
     const result = pick({
-      jobs: [{ id: "a", needs: ["tokens"] }],
+      jobs: [{ id: "a", needs: [{ resource: "tokens" }] }],
       capacity: { budget: windows() },
       rank: asGiven,
       now: 1000,
@@ -277,7 +283,7 @@ describe("pick with a budget", () => {
 
   it("treats an unpriced job as free rather than guessing a number", () => {
     const result = pick({
-      jobs: [{ id: "a", needs: ["tokens"] }],
+      jobs: [{ id: "a", needs: [{ resource: "tokens" }] }],
       capacity: { budget: windows() },
       rank: asGiven,
       now: 1000,
@@ -292,7 +298,7 @@ describe("pick with a budget", () => {
     // it, and a caller that then declines to act has paid for nothing.
     const capacity = { budget: windows() }
     pick({
-      jobs: [{ id: "a", needs: ["tokens"], cost: 7.5 }],
+      jobs: [{ id: "a", needs: [{ resource: "tokens" }], cost: 7.5 }],
       capacity,
       rank: asGiven,
       now: 1000,
@@ -369,8 +375,12 @@ describe("pick, the findings from review", () => {
     }
     const result = pick({
       jobs: [
-        { id: "a", needs: ["tokens", "tokens"], cost: 8 },
-        { id: "b", needs: ["tokens"], cost: 8 },
+        {
+          id: "a",
+          needs: [{ resource: "tokens" }, { resource: "tokens" }],
+          cost: 8,
+        },
+        { id: "b", needs: [{ resource: "tokens" }], cost: 8 },
       ],
       capacity,
       rank: asGiven,
@@ -421,7 +431,7 @@ describe("pick, the findings from review", () => {
     // `resets` is the caller's clock in the caller's units, so offsets from a
     // monotonic base are legitimate. A 0 seed reported "already reset".
     const result = pick({
-      jobs: [{ id: "a", needs: ["t"], cost: 50 }],
+      jobs: [{ id: "a", needs: [{ resource: "t" }], cost: 50 }],
       capacity: {
         budget: { t: [{ name: "w", limit: 10, spent: 9, resets: -100 }] },
       },
@@ -478,8 +488,8 @@ describe("non-finite numbers fail closed", () => {
     expect(() =>
       pick({
         jobs: [
-          { id: "a", needs: ["prov"] },
-          { id: "b", needs: ["prov"] },
+          { id: "a", needs: [{ resource: "prov" }] },
+          { id: "b", needs: [{ resource: "prov" }] },
         ],
         capacity: {
           budget: {
@@ -501,7 +511,7 @@ describe("non-finite numbers fail closed", () => {
     // contract and a refusal would report scarcity that is not there.
     expect(() =>
       pick({
-        jobs: [{ id: "a", needs: ["prov"] }],
+        jobs: [{ id: "a", needs: [{ resource: "prov" }] }],
         capacity: {
           budget: {
             prov: [{ name: "weekly", limit: 10, spent: 0, resets: 1 }],
@@ -516,7 +526,7 @@ describe("non-finite numbers fail closed", () => {
 
   it("still grants a finite price", () => {
     const out = pick({
-      jobs: [{ id: "a", needs: ["prov"] }],
+      jobs: [{ id: "a", needs: [{ resource: "prov" }] }],
       capacity: {
         budget: { prov: [{ name: "weekly", limit: 10, spent: 0, resets: 1 }] },
       },
@@ -565,7 +575,7 @@ describe("rank must be a permutation, not merely onto", () => {
     // was given did come back.
     expect(() =>
       pick({
-        jobs: [{ id: "a", needs: ["lane"] }],
+        jobs: [{ id: "a", needs: [{ resource: "lane" }] }],
         capacity: { counting: { lane: { limit: 5, holders: [] } } },
         now: 0,
         rank: (jobs) =>
@@ -584,8 +594,8 @@ describe("rank must be a permutation, not merely onto", () => {
     expect(() =>
       pick({
         jobs: [
-          { id: "a", needs: ["lane"] },
-          { id: "a", needs: ["lane"] },
+          { id: "a", needs: [{ resource: "lane" }] },
+          { id: "a", needs: [{ resource: "lane" }] },
         ],
         capacity: { counting: { lane: { limit: 5, holders: [] } } },
         now: 0,
@@ -593,5 +603,37 @@ describe("rank must be a permutation, not merely onto", () => {
           jobs.map((job, n) => ({ job, rank: n, why: { base: n } })),
       }),
     ).toThrow(/twice|duplicate/i)
+  })
+})
+
+describe("need resolution", () => {
+  it("coalesces identical duplicates instead of double-consuming", () => {
+    const result = pick({
+      jobs: [{ id: "j", needs: [{ resource: "lane" }, { resource: "lane" }] }],
+      capacity: { counting: { lane: { limit: 1, holders: [] } } },
+      rank: flat,
+      now: 0,
+    })
+    expect(result.granted).toHaveLength(1)
+    expect(result.granted[0]?.holds).toEqual(["lane"])
+  })
+
+  it("throws when one job asks for one resource two different ways", () => {
+    expect(() =>
+      pick({
+        jobs: [
+          {
+            id: "j",
+            needs: [
+              { resource: "lane", units: 1 },
+              { resource: "lane", units: 2 },
+            ],
+          },
+        ],
+        capacity: { counting: { lane: { limit: 4, holders: [] } } },
+        rank: flat,
+        now: 0,
+      }),
+    ).toThrow(/lane/)
   })
 })

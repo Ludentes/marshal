@@ -4,7 +4,7 @@
 //
 // NEVER QUEUE, inherited from permit.ts: a refusal names a holder and returns
 // immediately. Waiting is the caller's decision, made with its own information.
-import type { Blocked, CostFn, Holder, Job, RankFn } from "./types"
+import type { Blocked, CostFn, Holder, Job, Need, RankFn } from "./types"
 
 export interface CountingState {
   limit: number
@@ -99,10 +99,11 @@ function asHolder(job: Job, now: number): Holder {
  */
 function firstBlocker(
   job: Job,
-  needs: string[],
+  needs: Need[],
   w: Working,
 ): Blocked | undefined {
-  for (const resource of needs) {
+  for (const need of needs) {
+    const resource = need.resource
     // Whether any map has heard of this name at all. A name the caller never
     // declared is a typo; a name declared with no allocation limit is a
     // deliberate choice. The two must not be conflated — see the `known`
@@ -199,8 +200,9 @@ function firstBlocker(
  * `firstBlocker` checked. Checking one list and debiting another is how a
  * resource gets overcommitted with both halves looking correct in isolation.
  */
-function consume(job: Job, needs: string[], w: Working): void {
-  for (const resource of needs) {
+function consume(job: Job, needs: Need[], w: Working): void {
+  for (const need of needs) {
+    const resource = need.resource
     if (w.exclusive.has(resource)) {
       w.exclusive.set(resource, asHolder(job, w.now))
     }
@@ -212,6 +214,41 @@ function consume(job: Job, needs: string[], w: Working): void {
     const counted = w.counting.get(resource)
     if (counted) counted.holders.push(asHolder(job, w.now))
   }
+}
+
+/**
+ * One entry per resource, or a throw.
+ *
+ * A name repeated in `needs` is one resource, not two: unfolded,
+ * `["lane","lane"]` was tested once against a free lane and then consumed
+ * twice, so a limit-of-one resource ended up with two holders. Identical
+ * repeats COALESCE rather than throwing, because a real caller composes one
+ * job's needs by concatenating independently-sourced lists and a harmless
+ * repeat must not take down the pass.
+ *
+ * Repeats that DISAGREE throw. Two entries naming one resource with different
+ * units or amounts is the caller not knowing what it needs, and there is no
+ * honest `Blocked` for it — the same reason a non-finite price throws.
+ */
+function resolveNeeds(job: Job): Need[] {
+  const byName = new Map<string, Need>()
+  for (const need of job.needs) {
+    const seen = byName.get(need.resource)
+    if (seen === undefined) {
+      byName.set(need.resource, need)
+      continue
+    }
+    if (
+      (seen.units ?? 1) !== (need.units ?? 1) ||
+      seen.amount !== need.amount
+    ) {
+      throw new Error(
+        `job ${job.id} asks for "${need.resource}" two different ways; ` +
+          "a resource may appear once per job",
+      )
+    }
+  }
+  return [...byName.values()]
 }
 
 /**
@@ -297,21 +334,14 @@ export function pick(i: PickInput): PickResult {
   }
 
   for (const { job, rank } of ranked) {
-    // A name repeated in `needs` is one resource, not two. `needs` carries no
-    // multiplicity, and the check and the debit read it separately: unfolded,
-    // `["lane","lane"]` was tested once against a free lane and then consumed
-    // twice, so a limit-of-one resource ended up with two holders and a budget
-    // window was debited double what admission approved. If a job ever needs
-    // two units of something, that wants an explicit count in the type, not a
-    // repeated string that happens to work in one half of the code.
-    const needs = [...new Set(job.needs)]
+    const needs = resolveNeeds(job)
     const blocked = firstBlocker(job, needs, w)
     if (blocked) {
       refused.push({ job, blocked })
       continue
     }
     consume(job, needs, w)
-    granted.push({ job, holds: needs, rank })
+    granted.push({ job, holds: needs.map((n) => n.resource), rank })
   }
 
   return { granted, refused }
