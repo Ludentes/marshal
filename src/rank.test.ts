@@ -92,3 +92,57 @@ describe("agingRank polices its caller's contract", () => {
     expect(ranker(one, 10 * 60_000)[0]?.why).toEqual({ base: 1, waited: 0 })
   })
 })
+
+describe("a non-finite now is the same corruption by another route", () => {
+  // The module guards `priority`, `since`, `cap` and `interval` for one
+  // stated reason: a NaN rank reaches `Grant.rank` and scrambles `sort` into
+  // implementation-defined order. `now` produces exactly that and was the one
+  // input nobody checked — and `pick()` does not check it either, so nothing
+  // upstream catches a timestamp that failed to parse.
+  const good = { priority: () => 1, since: () => 0, cap: 5, interval: 60_000 }
+  const one: Job[] = [{ id: "a", needs: [] }]
+
+  it("throws when now is NaN", () => {
+    const ranker = agingRank(good)
+    expect(() => ranker(one, Number.NaN)).toThrow(/now/)
+  })
+
+  it("throws when now is infinite", () => {
+    const ranker = agingRank(good)
+    expect(() => ranker(one, Number.POSITIVE_INFINITY)).toThrow(/now/)
+  })
+})
+
+describe("aging keeps ordering after the cap saturates", () => {
+  // The cap stops age erasing priority, and it also stopped age ordering
+  // anything: two jobs past `cap * interval` get identical ranks, and their
+  // order falls back to `sort` stability — the order the consumer happened to
+  // hand in. From a map iteration or a directory listing that is not FIFO,
+  // so a job that waited ten times longer is passed over indefinitely, which
+  // is the starvation this module exists to prevent.
+  const now = 1000 * 60_000
+
+  it("prefers the older of two saturated jobs, whatever the input order", () => {
+    const older = at("older", 0, 1)
+    const newer = at("newer", 100 * 60_000, 1)
+    expect(ranker([newer, older], now).map((r) => r.job.id)).toEqual([
+      "older",
+      "newer",
+    ])
+    expect(ranker([older, newer], now).map((r) => r.job.id)).toEqual([
+      "older",
+      "newer",
+    ])
+  })
+
+  it("still does not let age outrank a higher base priority", () => {
+    const out = ranker([at("ancient", 0, 0), at("fresh", now, 6)], now)
+    expect(out[0]?.job.id).toBe("fresh")
+  })
+
+  it("reports the capped bonus that entered the rank, not raw elapsed", () => {
+    const out = ranker([at("older", 0, 1)], now)
+    expect(out[0]?.rank).toBe(6)
+    expect(out[0]?.why).toEqual({ base: 1, waited: 5 })
+  })
+})
