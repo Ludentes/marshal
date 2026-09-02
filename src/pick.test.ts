@@ -476,11 +476,11 @@ describe("pick, the findings from review", () => {
 })
 
 describe("per-resource cost", () => {
-  it("prices each budgeted resource in its own denomination", () => {
-    // Today one price is applied to every budgeted resource a job needs, so
-    // the 5000-token price lands on a 3-email window and refuses. With
-    // per-resource pricing `amount` overrides the CostFn per name and the
-    // job is granted.
+  it("lets Need.amount override the CostFn, per resource", () => {
+    // This pins `amount` precedence, and nothing else: with `amount` set on
+    // BOTH needs the injected `cost` is never consulted, so it would pass
+    // against a one-argument CostFn too. The two tests below are the ones
+    // that pin per-resource pricing.
     const result = pick({
       jobs: [
         {
@@ -502,6 +502,56 @@ describe("per-resource cost", () => {
       cost: () => 5000,
     })
     expect(result.granted).toHaveLength(1)
+  })
+
+  it("debits two windows at two different prices", () => {
+    // The defect this branch is named for, asserted end to end rather than by
+    // proxy: one CostFn, two denominations, and a token price that would
+    // refuse outright if it landed on the email window.
+    const perResource = (_job: Job, resource: string) =>
+      resource === "tokens" ? 5000 : 1
+    const result = pick({
+      jobs: [
+        { id: "j", needs: [{ resource: "tokens" }, { resource: "emails" }] },
+      ],
+      capacity: {
+        budget: {
+          tokens: [{ name: "d", limit: 10_000, spent: 0, resets: 0 }],
+          emails: [{ name: "d", limit: 3, spent: 0, resets: 0 }],
+        },
+      },
+      rank: flat,
+      now: 0,
+      cost: perResource,
+    })
+    expect(result.granted.map((g) => g.job.id)).toEqual(["j"])
+  })
+
+  it("refuses on the small window when its own price alone is too big", () => {
+    // The companion, and the half that makes the pair fail if either price
+    // lands on the wrong window: the token window has room to spare, and the
+    // job is refused solely because 4 emails do not fit in 3.
+    const perResource = (_job: Job, resource: string) =>
+      resource === "tokens" ? 5000 : 4
+    const result = pick({
+      jobs: [
+        { id: "j", needs: [{ resource: "tokens" }, { resource: "emails" }] },
+      ],
+      capacity: {
+        budget: {
+          tokens: [{ name: "d", limit: 10_000, spent: 0, resets: 0 }],
+          emails: [{ name: "d", limit: 3, spent: 0, resets: 0 }],
+        },
+      },
+      rank: flat,
+      now: 0,
+      cost: perResource,
+    })
+    expect(result.granted).toEqual([])
+    expect(result.refused[0]?.blocked).toMatchObject({
+      kind: "budget-exhausted",
+      resource: "emails",
+    })
   })
 
   it("passes the resource to CostFn", () => {
@@ -717,13 +767,21 @@ describe("units", () => {
   const two = (id: string) => ({ id, needs: [{ resource: "lane", units: 2 }] })
 
   it("takes N units in one grant and records them as one holder", () => {
+    // `limit: 4`, two jobs of 2 units each: the second fills the lane exactly,
+    // and a third of any size is refused. Asserting only that the first job
+    // was granted was true whether units were honoured or ignored — the
+    // holder list is what says two were taken and not one.
     const result = pick({
-      jobs: [two("a")],
+      jobs: [two("a"), two("b"), { id: "c", needs: [{ resource: "lane" }] }],
       capacity: { counting: { lane: { limit: 4, holders: [] } } },
-      rank: flat,
+      rank: asGiven,
       now: 0,
     })
-    expect(result.granted).toHaveLength(1)
+    expect(result.granted.map((g) => g.job.id)).toEqual(["a", "b"])
+    const blocked = result.refused[0]?.blocked
+    if (blocked?.kind !== "no-capacity") throw new Error("expected no-capacity")
+    // Two jobs, two holders — not four entries for four units.
+    expect(blocked.holders.map((h) => h.id)).toEqual(["a", "b"])
   })
 
   it("refuses when the units asked for exceed what is left", () => {
