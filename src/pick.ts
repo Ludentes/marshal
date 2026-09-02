@@ -198,12 +198,14 @@ function firstBlocker(
       const units = unitsOf(need)
       const taken = counted.holders.reduce((n, h) => n + h.units, 0)
       if (taken + units > counted.limit) {
-        // Handed out by reference on purpose, after checking it is not
-        // observable: `holders` only grows, so once it reaches `limit` no
-        // later job can clear this check for the same resource, and `w` is
-        // discarded when `pick` returns. A defensive copy here was written
-        // first, along with a test for it — the test could not be made to
-        // fail, which is what proved the copy was mechanism nobody needed.
+        // `.map()` is a shape translation, not a defensive copy:
+        // `CountingState` carries `CountingHolder`, but `no-capacity` carries
+        // plain `Holder[]`, and `Blocked` is deliberately unchanged here. The
+        // `Holder`s inside the new array are still shared with `w`, which is
+        // fine for the reason sharing always was: `holders` only grows, so
+        // once it reaches `limit` no later job clears this check for the
+        // same resource, `w` is discarded when `pick` returns, and a
+        // `Holder` is read-only data.
         return {
           kind: "no-capacity",
           resource,
