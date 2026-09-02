@@ -3,7 +3,11 @@ import { describe, expect, it } from "vitest"
 import { agingRank } from "./rank"
 import type { Job } from "./types"
 
-const at = (id: string, since: number, priority: number): Job & {
+const at = (
+  id: string,
+  since: number,
+  priority: number,
+): Job & {
   since: number
   priority: number
 } => ({ id, needs: [], since, priority })

@@ -4,7 +4,7 @@
 // The POLICY stays injected. `Job` gains no `priority` and no `since` field:
 // those are the consumer's vocabulary, and a package that learned them could
 // not claim to know nothing about what a job is. Accessors are the seam.
-import type { Job, RankFn, Ranked } from "./types"
+import type { Job, Ranked, RankFn } from "./types"
 
 export interface AgingRankInput {
   priority: (job: Job) => number
