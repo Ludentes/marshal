@@ -53,7 +53,12 @@ describe("pick", () => {
         counting: {
           lane: {
             limit: 1,
-            holders: [{ id: "z", what: "already running", since: "earlier" }],
+            holders: [
+              {
+                holder: { id: "z", what: "already running", since: "earlier" },
+                units: 1,
+              },
+            ],
           },
         },
       },
@@ -635,5 +640,58 @@ describe("need resolution", () => {
         now: 0,
       }),
     ).toThrow(/lane/)
+  })
+})
+
+describe("units", () => {
+  const two = (id: string) => ({ id, needs: [{ resource: "lane", units: 2 }] })
+
+  it("takes N units in one grant and records them as one holder", () => {
+    const result = pick({
+      jobs: [two("a")],
+      capacity: { counting: { lane: { limit: 4, holders: [] } } },
+      rank: flat,
+      now: 0,
+    })
+    expect(result.granted).toHaveLength(1)
+  })
+
+  it("refuses when the units asked for exceed what is left", () => {
+    const result = pick({
+      jobs: [two("a"), two("b")],
+      capacity: { counting: { lane: { limit: 3, holders: [] } } },
+      rank: flat,
+      now: 0,
+    })
+    expect(result.granted.map((g) => g.job.id)).toEqual(["a"])
+    expect(result.refused[0]?.blocked).toMatchObject({
+      kind: "no-capacity",
+      resource: "lane",
+    })
+  })
+
+  it("names each holder once, whatever its unit count", () => {
+    const result = pick({
+      jobs: [two("a"), two("b")],
+      capacity: { counting: { lane: { limit: 3, holders: [] } } },
+      rank: flat,
+      now: 0,
+    })
+    const blocked = result.refused[0]?.blocked
+    if (blocked?.kind !== "no-capacity") throw new Error("expected no-capacity")
+    // One entry, not two: a duplicated identity-less record is the leak.
+    expect(blocked.holders).toHaveLength(1)
+    expect(blocked.holders[0]?.id).toBe("a")
+  })
+
+  it("throws on a unit count that is not a positive integer", () => {
+    expect(() =>
+      pick({
+        jobs: [{ id: "a", needs: [{ resource: "lane", units: 0 }] }],
+        capacity: { counting: { lane: { limit: 4, holders: [] } } },
+        rank: flat,
+        now: 0,
+      }),
+    ).toThrow(/units/)
   })
 })

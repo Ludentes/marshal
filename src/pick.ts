@@ -6,9 +6,21 @@
 // immediately. Waiting is the caller's decision, made with its own information.
 import type { Blocked, CostFn, Holder, Job, Need, RankFn } from "./types"
 
+/** One holder of a counting resource, and how many units it took. */
+export interface CountingHolder {
+  holder: Holder
+  units: number
+}
+
 export interface CountingState {
   limit: number
-  holders: Holder[]
+  /**
+   * The count lives HERE, not in repeated entries. N identical `Holder`
+   * records are indistinguishable, so a release removing "the holder whose id
+   * is A" removes one of them and leaks the rest — silently lowering the
+   * limit for the life of the process.
+   */
+  holders: CountingHolder[]
 }
 
 /**
@@ -73,6 +85,22 @@ interface Working {
 /** An unpriced job is free. Guessing a number here would be a policy. */
 function costOf(job: Job, cost?: CostFn): number {
   return job.cost ?? cost?.(job) ?? 0
+}
+
+/**
+ * A unit count that is not a positive integer is the caller breaking its own
+ * contract, so it THROWS. `0` would consume nothing while passing the check,
+ * and a fraction would make `taken` drift away from any number a holder
+ * released.
+ */
+function unitsOf(need: Need): number {
+  const units = need.units ?? 1
+  if (!Number.isInteger(units) || units < 1) {
+    throw new Error(
+      `units for "${need.resource}" must be a positive integer, got ${units}`,
+    )
+  }
+  return units
 }
 
 /**
@@ -167,14 +195,20 @@ function firstBlocker(
     const counted = w.counting.get(resource)
     if (counted) {
       known = true
-      if (counted.holders.length >= counted.limit) {
+      const units = unitsOf(need)
+      const taken = counted.holders.reduce((n, h) => n + h.units, 0)
+      if (taken + units > counted.limit) {
         // Handed out by reference on purpose, after checking it is not
         // observable: `holders` only grows, so once it reaches `limit` no
         // later job can clear this check for the same resource, and `w` is
         // discarded when `pick` returns. A defensive copy here was written
         // first, along with a test for it — the test could not be made to
         // fail, which is what proved the copy was mechanism nobody needed.
-        return { kind: "no-capacity", resource, holders: counted.holders }
+        return {
+          kind: "no-capacity",
+          resource,
+          holders: counted.holders.map((h) => h.holder),
+        }
       }
     }
 
@@ -212,7 +246,12 @@ function consume(job: Job, needs: Need[], w: Working): void {
       for (const win of budget) win.spent += price
     }
     const counted = w.counting.get(resource)
-    if (counted) counted.holders.push(asHolder(job, w.now))
+    if (counted) {
+      counted.holders.push({
+        holder: asHolder(job, w.now),
+        units: unitsOf(need),
+      })
+    }
   }
 }
 
