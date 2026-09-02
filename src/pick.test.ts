@@ -765,3 +765,70 @@ describe("units", () => {
     ).toThrow(/units/)
   })
 })
+
+describe("a negative price is a caller error, not free allowance", () => {
+  // Measured before the fix: `costOf` guarded only `Number.isFinite`, while
+  // its sibling `unitsOf` rejected anything that was not a positive integer.
+  // A window at 90 of 100 granted all three of `x{amount:-100}`, `y{amount:
+  // 50}` and `z{amount:50}` — `x` drove `spent` to -10 and bought the other
+  // two 100 units of a window that had 10.
+
+  it("throws on a negative amount rather than crediting the window", () => {
+    expect(() =>
+      pick({
+        jobs: [{ id: "x", needs: [{ resource: "prov", amount: -100 }] }],
+        capacity: {
+          budget: { prov: [{ name: "w", limit: 100, spent: 90, resets: 1 }] },
+        },
+        rank: flat,
+        now: 0,
+      }),
+    ).toThrow(/negative/)
+  })
+
+  it("throws on a CostFn that returns a negative number", () => {
+    expect(() =>
+      pick({
+        jobs: [{ id: "x", needs: [{ resource: "prov" }] }],
+        capacity: {
+          budget: { prov: [{ name: "w", limit: 100, spent: 90, resets: 1 }] },
+        },
+        rank: flat,
+        now: 0,
+        cost: () => -100,
+      }),
+    ).toThrow(/negative/)
+  })
+
+  it("keeps a zero price legal, because an unpriced need is free", () => {
+    const out = pick({
+      jobs: [{ id: "x", needs: [{ resource: "prov", amount: 0 }] }],
+      capacity: {
+        budget: { prov: [{ name: "w", limit: 100, spent: 100, resets: 1 }] },
+      },
+      rank: flat,
+      now: 0,
+    })
+    expect(out.granted).toHaveLength(1)
+  })
+
+  it("does not let one negative price buy later jobs a full window", () => {
+    // The whole reproduction, end to end: a per-job refusal would not be
+    // enough, because the damage is what `x` writes into `spent` for `y` and
+    // `z` to spend. It throws, so nothing is granted at all.
+    expect(() =>
+      pick({
+        jobs: [
+          { id: "x", needs: [{ resource: "prov", amount: -100 }] },
+          { id: "y", needs: [{ resource: "prov", amount: 50 }] },
+          { id: "z", needs: [{ resource: "prov", amount: 50 }] },
+        ],
+        capacity: {
+          budget: { prov: [{ name: "w", limit: 100, spent: 90, resets: 1 }] },
+        },
+        rank: asGiven,
+        now: 0,
+      }),
+    ).toThrow(/negative/)
+  })
+})

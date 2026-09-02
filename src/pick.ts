@@ -87,10 +87,10 @@ interface Working {
  *
  * `need.amount` prices this one resource specifically, and takes precedence
  * over the injected {@link CostFn} — the same precedence its own doc comment
- * states. A price that is not a number is the caller breaking its own
- * contract, so it THROWS rather than returning a `Blocked`: see the comment
- * at the call site in `firstBlocker` for why there is no honest `Blocked`
- * for it.
+ * states. A price that is not a finite non-negative number is the caller
+ * breaking its own contract, so it THROWS rather than returning a `Blocked`:
+ * see the comment at the call site in `firstBlocker` for why there is no
+ * honest `Blocked` for it.
  */
 function costOf(job: Job, need: Need, cost?: CostFn): number {
   const price = need.amount ?? cost?.(job, need.resource) ?? 0
@@ -98,6 +98,18 @@ function costOf(job: Job, need: Need, cost?: CostFn): number {
     throw new Error(
       `cost for job ${job.id} on "${need.resource}" must be a finite ` +
         `number, got ${price}`,
+    )
+  }
+  // Negative is the same class of caller error, and a worse one: a negative
+  // price CREDITS the window, so one job at -100 against a window at 90 of
+  // 100 bought the two jobs behind it a hundred units of an allowance that
+  // had ten. `reconcile` already clamps at zero for exactly this reason;
+  // admission did not. Zero stays legal — an unpriced need is free, and that
+  // is deliberate.
+  if (price < 0) {
+    throw new Error(
+      `cost for job ${job.id} on "${need.resource}" must not be ` +
+        `negative, got ${price}`,
     )
   }
   return price
