@@ -248,12 +248,15 @@ function firstBlocker(
       if (taken + units > counted.limit) {
         // `.map()` is a shape translation, not a defensive copy:
         // `CountingState` carries `CountingHolder`, but `no-capacity` carries
-        // plain `Holder[]`, and `Blocked` is deliberately unchanged here. The
-        // `Holder`s inside the new array are still shared with `w`, which is
-        // fine for the reason sharing always was: `holders` only grows, so
-        // once it reaches `limit` no later job clears this check for the
-        // same resource, `w` is discarded when `pick` returns, and a
-        // `Holder` is read-only data.
+        // plain `Holder[]`, and `Blocked` is deliberately unchanged here.
+        //
+        // It is nonetheless the thing that makes sharing safe. `.map()`
+        // allocates a FRESH array, so a later `holders.push` — and units make
+        // those possible after a refusal, since this branch is entered on
+        // `taken + units > limit`, which does not imply `taken === limit` —
+        // cannot be reached through the array already handed to the caller.
+        // The `Holder`s inside it are still shared with `w`, which is fine
+        // because a `Holder` is read-only data.
         return {
           kind: "no-capacity",
           resource,
