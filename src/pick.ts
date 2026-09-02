@@ -82,9 +82,26 @@ interface Working {
   now: number
 }
 
-/** An unpriced job is free. Guessing a number here would be a policy. */
-function costOf(job: Job, cost?: CostFn): number {
-  return job.cost ?? cost?.(job) ?? 0
+/**
+ * An unpriced job is free. Guessing a number here would be a policy.
+ *
+ * `need.amount` prices this one resource specifically, and takes precedence
+ * over both `job.cost` (a single job-level number, kept for the callers
+ * Task 4 has not migrated yet) and the injected {@link CostFn} — the same
+ * precedence its own doc comment states. A price that is not a number is the
+ * caller breaking its own contract, so it THROWS rather than returning a
+ * `Blocked`: see the comment at the call site in `firstBlocker` for why
+ * there is no honest `Blocked` for it.
+ */
+function costOf(job: Job, need: Need, cost?: CostFn): number {
+  const price = need.amount ?? job.cost ?? cost?.(job, need.resource) ?? 0
+  if (!Number.isFinite(price)) {
+    throw new Error(
+      `cost for job ${job.id} on "${need.resource}" must be a finite ` +
+        `number, got ${price}`,
+    )
+  }
+  return price
 }
 
 /**
@@ -155,23 +172,19 @@ function firstBlocker(
     const budget = w.budget.get(resource)
     if (budget) {
       known = true
-      const price = costOf(job, w.cost)
-      // A price that is not a number is the caller breaking its own contract,
-      // so it THROWS, exactly as a rank() that drops a job does. It is not a
-      // scarcity condition and there is no honest `Blocked` for it:
-      // `budget-exhausted` would claim a full window and name a reset that
-      // does not exist, and `custom` is construct-only for consumers.
+      // A price that is not a number is the caller breaking its own
+      // contract, so `costOf` THROWS, exactly as a rank() that drops a job
+      // does. It is not a scarcity condition and there is no honest
+      // `Blocked` for it: `budget-exhausted` would claim a full window and
+      // name a reset that does not exist, and `custom` is construct-only for
+      // consumers.
       //
       // Failing closed per-job is not enough either. `spent + NaN > limit` is
       // false for every window, so a NaN price granted the job and wrote
       // `spent: NaN`, after which every later job in the pass was granted too
       // — one bad price silently disabled the budget for the whole pass, and
       // a per-job refusal nobody reads is how that stays invisible.
-      if (!Number.isFinite(price)) {
-        throw new Error(
-          `cost for job ${job.id} on "${resource}" must be a finite number, got ${price}`,
-        )
-      }
+      const price = costOf(job, need, w.cost)
       // Every window, not the loosest. The tightest one is the allowance; the
       // others are burst limits, and satisfying only a burst limit is how a
       // scheduler sprints into a wall on day two.
@@ -244,7 +257,7 @@ function consume(job: Job, needs: Need[], w: Working): void {
     }
     const budget = w.budget.get(resource)
     if (budget) {
-      const price = costOf(job, w.cost)
+      const price = costOf(job, need, w.cost)
       for (const win of budget) win.spent += price
     }
     const counted = w.counting.get(resource)

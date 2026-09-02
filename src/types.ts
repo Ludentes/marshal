@@ -86,8 +86,15 @@ export interface Ranked {
  */
 export type RankFn = (jobs: Job[], now: number) => Ranked[]
 
-/** Estimating a job's cost is domain knowledge, so it is injected too. */
-export type CostFn = (job: Job) => number
+/**
+ * Estimating a job's cost is domain knowledge, so it is injected.
+ *
+ * `resource` is passed because a job may need two budgets in different
+ * denominations — tokens and emails — and one number cannot be right for
+ * both. An existing one-argument function stays assignable, so a consumer
+ * that ignores it keeps today's behaviour and must be migrated deliberately.
+ */
+export type CostFn = (job: Job, resource: string) => number
 
 // The const and the union are two declarations of one fact, so they are tied
 // together at compile time: a kind added to one and not the other stops the

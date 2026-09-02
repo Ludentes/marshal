@@ -473,6 +473,74 @@ describe("pick, the findings from review", () => {
   })
 })
 
+describe("per-resource cost", () => {
+  it("prices each budgeted resource in its own denomination", () => {
+    // Today one price is applied to every budgeted resource a job needs, so
+    // the 5000-token price lands on a 3-email window and refuses. With
+    // per-resource pricing `amount` overrides the CostFn per name and the
+    // job is granted.
+    const result = pick({
+      jobs: [
+        {
+          id: "j",
+          needs: [
+            { resource: "tokens", amount: 5000 },
+            { resource: "emails", amount: 1 },
+          ],
+        },
+      ],
+      capacity: {
+        budget: {
+          tokens: [{ name: "d", limit: 10_000, spent: 0, resets: 0 }],
+          emails: [{ name: "d", limit: 3, spent: 0, resets: 0 }],
+        },
+      },
+      rank: flat,
+      now: 0,
+      cost: () => 5000,
+    })
+    expect(result.granted).toHaveLength(1)
+  })
+
+  it("passes the resource to CostFn", () => {
+    const seen: string[] = []
+    pick({
+      jobs: [
+        { id: "j", needs: [{ resource: "tokens" }, { resource: "emails" }] },
+      ],
+      capacity: {
+        budget: {
+          tokens: [{ name: "d", limit: 10, spent: 0, resets: 0 }],
+          emails: [{ name: "d", limit: 10, spent: 0, resets: 0 }],
+        },
+      },
+      rank: flat,
+      now: 0,
+      cost: (_job, resource) => {
+        seen.push(resource)
+        return 1
+      },
+    })
+    expect(seen).toContain("tokens")
+    expect(seen).toContain("emails")
+  })
+
+  it("throws on a non-finite amount, as it does on a non-finite price", () => {
+    expect(() =>
+      pick({
+        jobs: [
+          { id: "j", needs: [{ resource: "tokens", amount: Number.NaN }] },
+        ],
+        capacity: {
+          budget: { tokens: [{ name: "d", limit: 10, spent: 0, resets: 0 }] },
+        },
+        rank: flat,
+        now: 0,
+      }),
+    ).toThrow(/finite/)
+  })
+})
+
 describe("non-finite numbers fail closed", () => {
   // Three findings from the 2026-08-19 medium review. A NaN is not an
   // unlikely input here: the next caller derives a CostFn from a provider
