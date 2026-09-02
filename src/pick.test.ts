@@ -832,3 +832,76 @@ describe("a negative price is a caller error, not free allowance", () => {
     ).toThrow(/negative/)
   })
 })
+
+describe("one price per job per pass", () => {
+  // `CostFn` is the consumer's, and its contract never required determinism.
+  // Widening it to `(job, resource)` makes a stateful per-resource
+  // implementation the natural thing to write, so a check and a debit that
+  // each call it independently can now disagree — and did.
+
+  const oneThenSixty = () => {
+    let calls = 0
+    return () => {
+      calls += 1
+      return calls === 1 ? 1 : 60
+    }
+  }
+
+  it("debits the price it granted on, not a freshly derived one", () => {
+    // Measured before the fix: `a` was checked at 1 and charged 60, so the
+    // window read 60 of 100 instead of 1, and `b` — priced 60 — was refused
+    // by a shortfall that only the double call created.
+    const result = pick({
+      jobs: [
+        { id: "a", needs: [{ resource: "prov" }] },
+        { id: "b", needs: [{ resource: "prov" }] },
+      ],
+      capacity: {
+        budget: { prov: [{ name: "w", limit: 100, spent: 0, resets: 5 }] },
+      },
+      rank: asGiven,
+      now: 0,
+      cost: oneThenSixty(),
+    })
+    expect(result.granted.map((g) => g.job.id)).toEqual(["a", "b"])
+  })
+
+  it("calls the CostFn once per budgeted need it grants", () => {
+    const seen: string[] = []
+    pick({
+      jobs: [
+        { id: "a", needs: [{ resource: "tokens" }, { resource: "emails" }] },
+      ],
+      capacity: {
+        budget: {
+          tokens: [{ name: "d", limit: 100, spent: 0, resets: 0 }],
+          emails: [{ name: "d", limit: 100, spent: 0, resets: 0 }],
+        },
+      },
+      rank: flat,
+      now: 0,
+      cost: (_job, resource) => {
+        seen.push(resource)
+        return 1
+      },
+    })
+    expect(seen).toEqual(["tokens", "emails"])
+  })
+
+  it("asks no price for a resource that has no budget window", () => {
+    // The memo is consulted lazily, never filled up front: a counting-only
+    // resource must not reach the consumer's estimator at all.
+    const seen: string[] = []
+    pick({
+      jobs: [{ id: "a", needs: [{ resource: "lane" }] }],
+      capacity: { counting: { lane: { limit: 2, holders: [] } } },
+      rank: flat,
+      now: 0,
+      cost: (_job, resource) => {
+        seen.push(resource)
+        return 1
+      },
+    })
+    expect(seen).toEqual([])
+  })
+})

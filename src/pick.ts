@@ -83,6 +83,13 @@ interface Working {
 }
 
 /**
+ * One job's prices, by resource name, for one pass. Created fresh per job in
+ * `pick`'s loop: a price is a property of this job against this resource, and
+ * carrying one across jobs would charge the second job the first one's rate.
+ */
+type PriceMemo = Map<string, number>
+
+/**
  * An unpriced job is free. Guessing a number here would be a policy.
  *
  * `need.amount` prices this one resource specifically, and takes precedence
@@ -91,8 +98,23 @@ interface Working {
  * breaking its own contract, so it THROWS rather than returning a `Blocked`:
  * see the comment at the call site in `firstBlocker` for why there is no
  * honest `Blocked` for it.
+ *
+ * `priced` is the per-job memo, and it is why the price the check used is the
+ * price the debit applies. `CostFn` belongs to the consumer and its contract
+ * never required determinism; widening it to `(job, resource)` makes a
+ * stateful per-resource implementation the natural thing to write, and a
+ * function returning 1 then 60 granted a job on 1 and charged the window 60.
+ * The memo is filled LAZILY, on the first ask for a name that actually has a
+ * budget window, so a counting-only resource never reaches the estimator.
  */
-function costOf(job: Job, need: Need, cost?: CostFn): number {
+function costOf(
+  job: Job,
+  need: Need,
+  priced: PriceMemo,
+  cost?: CostFn,
+): number {
+  const memo = priced.get(need.resource)
+  if (memo !== undefined) return memo
   const price = need.amount ?? cost?.(job, need.resource) ?? 0
   if (!Number.isFinite(price)) {
     throw new Error(
@@ -112,6 +134,7 @@ function costOf(job: Job, need: Need, cost?: CostFn): number {
         `negative, got ${price}`,
     )
   }
+  priced.set(need.resource, price)
   return price
 }
 
@@ -157,6 +180,7 @@ function firstBlocker(
   job: Job,
   needs: Need[],
   w: Working,
+  priced: PriceMemo,
 ): Blocked | undefined {
   for (const need of needs) {
     const resource = need.resource
@@ -195,7 +219,7 @@ function firstBlocker(
       // `spent: NaN`, after which every later job in the pass was granted too
       // — one bad price silently disabled the budget for the whole pass, and
       // a per-job refusal nobody reads is how that stays invisible.
-      const price = costOf(job, need, w.cost)
+      const price = costOf(job, need, priced, w.cost)
       // Every window, not the loosest. The tightest one is the allowance; the
       // others are burst limits, and satisfying only a burst limit is how a
       // scheduler sprints into a wall on day two.
@@ -257,10 +281,13 @@ function firstBlocker(
  * Called only after {@link firstBlocker} cleared every need.
  *
  * Applies to every map the name appears in, and must walk the SAME list
- * `firstBlocker` checked. Checking one list and debiting another is how a
- * resource gets overcommitted with both halves looking correct in isolation.
+ * `firstBlocker` checked with the SAME prices — hence the shared `priced`
+ * memo. Checking one list and debiting another is how a resource gets
+ * overcommitted with both halves looking correct in isolation, and re-deriving
+ * the price is the same bug one level down: it walked the same list and
+ * charged a different number.
  */
-function consume(job: Job, needs: Need[], w: Working): void {
+function consume(job: Job, needs: Need[], w: Working, priced: PriceMemo): void {
   for (const need of needs) {
     const resource = need.resource
     if (w.exclusive.has(resource)) {
@@ -268,7 +295,7 @@ function consume(job: Job, needs: Need[], w: Working): void {
     }
     const budget = w.budget.get(resource)
     if (budget) {
-      const price = costOf(job, need, w.cost)
+      const price = costOf(job, need, priced, w.cost)
       for (const win of budget) win.spent += price
     }
     const counted = w.counting.get(resource)
@@ -400,12 +427,13 @@ export function pick(i: PickInput): PickResult {
 
   for (const { job, rank } of ranked) {
     const needs = resolveNeeds(job)
-    const blocked = firstBlocker(job, needs, w)
+    const priced: PriceMemo = new Map()
+    const blocked = firstBlocker(job, needs, w, priced)
     if (blocked) {
       refused.push({ job, blocked })
       continue
     }
-    consume(job, needs, w)
+    consume(job, needs, w, priced)
     granted.push({ job, holds: needs.map((n) => n.resource), rank })
   }
 
