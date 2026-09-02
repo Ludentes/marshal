@@ -31,12 +31,10 @@ export interface Need {
   amount?: number
 }
 
-/** A unit of work asking for resources. `needs` are opaque resource names. */
+/** A unit of work asking for resources. */
 export interface Job {
   id: string
   needs: Need[]
-  /** Overrides {@link CostFn} when the consumer already knows the number. */
-  cost?: number
 }
 
 /**

@@ -217,7 +217,7 @@ describe("pick with a budget", () => {
     // The 5-hour window has 100 free and would say yes on its own. The weekly
     // window has 17. Admission must satisfy every window, not the loosest.
     const result = pick({
-      jobs: [{ id: "a", needs: [{ resource: "tokens" }], cost: 37.5 }],
+      jobs: [{ id: "a", needs: [{ resource: "tokens", amount: 37.5 }] }],
       capacity: { budget: windows() },
       rank: asGiven,
       now: 1000,
@@ -239,7 +239,7 @@ describe("pick with a budget", () => {
     // one level down inside it: a `find` would answer 18_000 here purely
     // because of array order.
     const result = pick({
-      jobs: [{ id: "a", needs: [{ resource: "tokens" }], cost: 60 }],
+      jobs: [{ id: "a", needs: [{ resource: "tokens", amount: 60 }] }],
       capacity: {
         budget: {
           tokens: [
@@ -261,9 +261,9 @@ describe("pick with a budget", () => {
   it("grants when every window fits, and debits all of them", () => {
     const result = pick({
       jobs: [
-        { id: "a", needs: [{ resource: "tokens" }], cost: 7.5 },
-        { id: "b", needs: [{ resource: "tokens" }], cost: 7.5 },
-        { id: "c", needs: [{ resource: "tokens" }], cost: 7.5 },
+        { id: "a", needs: [{ resource: "tokens", amount: 7.5 }] },
+        { id: "b", needs: [{ resource: "tokens", amount: 7.5 }] },
+        { id: "c", needs: [{ resource: "tokens", amount: 7.5 }] },
       ],
       capacity: { budget: windows() },
       rank: asGiven,
@@ -303,7 +303,7 @@ describe("pick with a budget", () => {
     // it, and a caller that then declines to act has paid for nothing.
     const capacity = { budget: windows() }
     pick({
-      jobs: [{ id: "a", needs: [{ resource: "tokens" }], cost: 7.5 }],
+      jobs: [{ id: "a", needs: [{ resource: "tokens", amount: 7.5 }] }],
       capacity,
       rank: asGiven,
       now: 1000,
@@ -382,10 +382,12 @@ describe("pick, the findings from review", () => {
       jobs: [
         {
           id: "a",
-          needs: [{ resource: "tokens" }, { resource: "tokens" }],
-          cost: 8,
+          needs: [
+            { resource: "tokens", amount: 8 },
+            { resource: "tokens", amount: 8 },
+          ],
         },
-        { id: "b", needs: [{ resource: "tokens" }], cost: 8 },
+        { id: "b", needs: [{ resource: "tokens", amount: 8 }] },
       ],
       capacity,
       rank: asGiven,
@@ -436,7 +438,7 @@ describe("pick, the findings from review", () => {
     // `resets` is the caller's clock in the caller's units, so offsets from a
     // monotonic base are legitimate. A 0 seed reported "already reset".
     const result = pick({
-      jobs: [{ id: "a", needs: [{ resource: "t" }], cost: 50 }],
+      jobs: [{ id: "a", needs: [{ resource: "t", amount: 50 }] }],
       capacity: {
         budget: { t: [{ name: "w", limit: 10, spent: 9, resets: -100 }] },
       },

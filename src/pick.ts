@@ -86,15 +86,14 @@ interface Working {
  * An unpriced job is free. Guessing a number here would be a policy.
  *
  * `need.amount` prices this one resource specifically, and takes precedence
- * over both `job.cost` (a single job-level number, kept for the callers
- * Task 4 has not migrated yet) and the injected {@link CostFn} — the same
- * precedence its own doc comment states. A price that is not a number is the
- * caller breaking its own contract, so it THROWS rather than returning a
- * `Blocked`: see the comment at the call site in `firstBlocker` for why
- * there is no honest `Blocked` for it.
+ * over the injected {@link CostFn} — the same precedence its own doc comment
+ * states. A price that is not a number is the caller breaking its own
+ * contract, so it THROWS rather than returning a `Blocked`: see the comment
+ * at the call site in `firstBlocker` for why there is no honest `Blocked`
+ * for it.
  */
 function costOf(job: Job, need: Need, cost?: CostFn): number {
-  const price = need.amount ?? job.cost ?? cost?.(job, need.resource) ?? 0
+  const price = need.amount ?? cost?.(job, need.resource) ?? 0
   if (!Number.isFinite(price)) {
     throw new Error(
       `cost for job ${job.id} on "${need.resource}" must be a finite ` +
