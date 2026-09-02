@@ -44,3 +44,51 @@ describe("agingRank", () => {
     expect(out[0]?.why).toEqual({ base: 2, waited: 3 })
   })
 })
+
+describe("agingRank polices its caller's contract", () => {
+  // Every other module in the package throws on a caller contract broken
+  // here: `costOf`, `unitsOf`, `reconcile` and `pick`'s rank-permutation
+  // checks. This one did not. The accessors are deliberately untyped, so a
+  // job missing the field is a realistic input — and a missing `priority`
+  // gave every job `rank: NaN` and `why: {base: NaN, waited: NaN}` with no
+  // throw at all. Those NaNs reach `Grant.rank`, the audit record this module
+  // exists to produce, and scramble `sort` into implementation-defined order.
+
+  const good = { priority: () => 1, since: () => 0, cap: 5, interval: 60_000 }
+  const one: Job[] = [{ id: "a", needs: [] }]
+
+  it("throws when priority does not return a finite number", () => {
+    const ranker = agingRank({ ...good, priority: () => Number.NaN })
+    expect(() => ranker(one, 0)).toThrow(/priority.*\ba\b/)
+  })
+
+  it("throws when since does not return a finite number", () => {
+    const ranker = agingRank({ ...good, since: () => Number.NaN })
+    expect(() => ranker(one, 0)).toThrow(/since.*\ba\b/)
+  })
+
+  it("throws on an interval of zero rather than returning 0/0", () => {
+    // `now === since` with `interval: 0` is 0/0, which is NaN, which is the
+    // same silent corruption by a different route.
+    expect(() => agingRank({ ...good, interval: 0 })).toThrow(/interval/)
+  })
+
+  it("throws on a negative interval", () => {
+    expect(() => agingRank({ ...good, interval: -1 })).toThrow(/interval/)
+  })
+
+  it("throws on a negative cap", () => {
+    expect(() => agingRank({ ...good, cap: -1 })).toThrow(/cap/)
+  })
+
+  it("throws on a non-finite cap", () => {
+    expect(() => agingRank({ ...good, cap: Number.POSITIVE_INFINITY })).toThrow(
+      /cap/,
+    )
+  })
+
+  it("allows a cap of zero, which is aging turned off", () => {
+    const ranker = agingRank({ ...good, cap: 0 })
+    expect(ranker(one, 10 * 60_000)[0]?.why).toEqual({ base: 1, waited: 0 })
+  })
+})

@@ -10,9 +10,12 @@ export interface AgingRankInput {
   priority: (job: Job) => number
   /** When the job was first asked for, in the same clock `pick` is given. */
   since: (job: Job) => number
-  /** Ceiling on the aging bonus. Without one, age erases priority. */
+  /**
+   * Ceiling on the aging bonus. Without one, age erases priority. Must be a
+   * non-negative finite number; zero is aging turned off.
+   */
   cap: number
-  /** Clock units per point of bonus. */
+  /** Clock units per point of bonus. Must be positive and finite. */
   interval: number
 }
 
@@ -28,13 +31,49 @@ export interface AgingRankInput {
  * this module's own test rather than assumed.
  */
 export function agingRank(o: AgingRankInput): RankFn {
+  // Validated ONCE, here, rather than per job: `cap` and `interval` are
+  // properties of the policy, not of any job, and re-checking them inside the
+  // loop would report the same fault N times and say nothing more.
+  //
+  // `interval: 0` is the case worth naming: with `now === since` it computes
+  // 0/0, which is NaN, which is the same silent corruption the accessor
+  // guards below exist to stop.
+  if (!Number.isFinite(o.interval) || o.interval <= 0) {
+    throw new Error(
+      `agingRank interval must be a positive finite number, got ${o.interval}`,
+    )
+  }
+  if (!Number.isFinite(o.cap) || o.cap < 0) {
+    throw new Error(
+      `agingRank cap must be a non-negative finite number, got ${o.cap}`,
+    )
+  }
   return (jobs: Job[], now: number): Ranked[] =>
     jobs
       .map((job) => {
+        // The accessors are deliberately untyped — they are the seam where
+        // the consumer's vocabulary stays the consumer's — so a job missing
+        // the field is a realistic input, not a hypothetical one. It THROWS
+        // for the reason `costOf`, `unitsOf` and `pick`'s permutation checks
+        // throw: this is the caller breaking its own contract, not a scarcity
+        // condition. A NaN rank reaches `Grant.rank`, the audit record this
+        // module exists to produce, and scrambles `sort` into
+        // implementation-defined order — a wrong answer nobody can see.
         const base = o.priority(job)
+        if (!Number.isFinite(base)) {
+          throw new Error(
+            `priority for job ${job.id} must be a finite number, got ${base}`,
+          )
+        }
+        const at = o.since(job)
+        if (!Number.isFinite(at)) {
+          throw new Error(
+            `since for job ${job.id} must be a finite number, got ${at}`,
+          )
+        }
         const waited = Math.max(
           0,
-          Math.min(o.cap, Math.floor((now - o.since(job)) / o.interval)),
+          Math.min(o.cap, Math.floor((now - at) / o.interval)),
         )
         return { job, rank: base + waited, why: { base, waited } }
       })
