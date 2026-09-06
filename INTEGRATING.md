@@ -10,7 +10,7 @@ Everything is one cycle. You run it whenever you have work that might start —
 on a timer, on a queue event, whenever a job finishes.
 
 ```ts
-import { pick } from "@ludentes/marshal/pick"
+import { pick } from "@opcheese/marshal/pick"
 
 // 1. Load the current state. Yours, from wherever you keep it.
 const capacity = await loadCapacity()
@@ -158,7 +158,7 @@ real allowance drains, and it surfaces as a provider outage rather than as the
 admission error it is.
 
 ```ts
-import { reconcile } from "@ludentes/marshal/pick"
+import { reconcile } from "@opcheese/marshal/pick"
 
 const { windows, drift, beyondTolerance } = reconcile(currentWindows, {
   estimated: 500,
@@ -189,7 +189,7 @@ beside it, in its own module, so taking it is a decision rather than something
 you inherit:
 
 ```ts
-import { agingRank } from "@ludentes/marshal/rank"
+import { agingRank } from "@opcheese/marshal/rank"
 
 const rank = agingRank({
   priority: priorityOf,     // your vocabulary, not Marshal's

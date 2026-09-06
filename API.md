@@ -4,13 +4,13 @@ Four subpath exports. There is no barrel and no default export — import the
 module you need.
 
 ```ts
-import { pick, reconcile } from "@ludentes/marshal/pick"
-import { acquirePermit, NoPermit, permitFile } from "@ludentes/marshal/permit"
-import { agingRank } from "@ludentes/marshal/rank"
-import { BLOCKED_KINDS } from "@ludentes/marshal/types"
+import { pick, reconcile } from "@opcheese/marshal/pick"
+import { acquirePermit, NoPermit, permitFile } from "@opcheese/marshal/permit"
+import { agingRank } from "@opcheese/marshal/rank"
+import { BLOCKED_KINDS } from "@opcheese/marshal/types"
 import type {
   Blocked, Holder, Job, Need, RankFn, CostFn,
-} from "@ludentes/marshal/types"
+} from "@opcheese/marshal/types"
 ```
 
 **ESM, and verified on Node 20, 22 and 24.** No dependencies: the package
@@ -26,7 +26,7 @@ actually printed.
 
 ---
 
-## `@ludentes/marshal/pick`
+## `@opcheese/marshal/pick`
 
 ### `pick(input: PickInput): PickResult`
 
@@ -72,7 +72,7 @@ debited as the pass proceeds** — so two jobs wanting the same exclusive
 resource contend inside a single `pick()`:
 
 ```ts
-import { pick } from "@ludentes/marshal/pick"
+import { pick } from "@opcheese/marshal/pick"
 
 const rank = (jobs) => jobs.map((job) => ({ job, rank: 0, why: { base: 0 } }))
 
@@ -281,7 +281,7 @@ interface Reconciliation {
 ```
 
 ```ts
-import { reconcile } from "@ludentes/marshal/pick"
+import { reconcile } from "@opcheese/marshal/pick"
 
 const windows = [{ name: "week", limit: 13, spent: 5, resets: now + 604_800_000 }]
 
@@ -316,7 +316,7 @@ Three behaviours worth knowing, each of which was once a bug:
 
 ---
 
-## `@ludentes/marshal/permit`
+## `@opcheese/marshal/permit`
 
 The **other** layer, and the one most often merged with `pick()` by mistake.
 `pick` decides which job may start, from capacity you describe, inside one
@@ -365,7 +365,7 @@ or steals it from work still in progress. A dead holder's claim is free
 immediately; a live holder's claim is honoured indefinitely.
 
 ```ts
-import { acquirePermit, NoPermit, permitFile } from "@ludentes/marshal/permit"
+import { acquirePermit, NoPermit, permitFile } from "@opcheese/marshal/permit"
 
 const holder = (what) => ({
   pid: process.pid,
@@ -438,7 +438,7 @@ path is tested without killing real processes.
 
 ---
 
-## `@ludentes/marshal/rank`
+## `@opcheese/marshal/rank`
 
 ### `agingRank(input: AgingRankInput): RankFn`
 
@@ -468,7 +468,7 @@ and a package that learned them could not claim to know nothing about what a
 job is. The accessors are the seam.
 
 ```ts
-import { agingRank } from "@ludentes/marshal/rank"
+import { agingRank } from "@opcheese/marshal/rank"
 
 const rank = agingRank({
   priority: (job) => job.p,
@@ -524,7 +524,7 @@ wrong answer nobody can see.
 
 ---
 
-## `@ludentes/marshal/types`
+## `@opcheese/marshal/types`
 
 The vocabulary, kept apart from the algorithm so a consumer that only needs to
 *read* a refusal does not import the decision procedure.

@@ -21,8 +21,14 @@ Extracted from Galatea, where it runs the admission half of an agent scheduler.
 ## Install
 
 ```bash
-pnpm add @ludentes/marshal
+pnpm add @opcheese/marshal
 ```
+
+**The npm scope is `@opcheese`; the repository lives under `Ludentes`.** The
+two names disagree because the scope is an account that exists and the org
+scope is not registered. Nothing about the package depends on the difference —
+it is worth one line here so you do not go looking for `@ludentes/marshal` and
+conclude you have the wrong name.
 
 No build step: `dist/` ships in the tarball. ESM, no dependencies, verified on
 Node 20, 22 and 24 — CommonJS consumers can `require()` it on Node 22 and
@@ -30,7 +36,7 @@ later.
 
 **Pre-1.0, and semver applies below 1.0 the way it always does: a minor may
 break you.** There is no release cadence — versions appear when the upstream
-copy changes enough to be worth one. Pin exactly (`@ludentes/marshal@0.1.0`,
+copy changes enough to be worth one. Pin exactly (`@opcheese/marshal@0.1.0`,
 no caret) if you would rather read the [changelog](CHANGELOG.md) than be
 surprised by it. Adding an entry to `BLOCKED_KINDS` is the one change that
 would break a consumer *silently*, so it is guarded by a compile-time tie
@@ -44,7 +50,7 @@ A git install still works if you want to track `main` ahead of a release:
 Two jobs want one repository. One gets it; the other is told who has it.
 
 ```ts
-import { pick } from "@ludentes/marshal/pick"
+import { pick } from "@opcheese/marshal/pick"
 
 const rank = (jobs) => jobs.map((job) => ({ job, rank: 0, why: { base: 0 } }))
 

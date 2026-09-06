@@ -9,7 +9,7 @@ to whatever `main` was when you ran it.
 
 ## `0.1.0` — the first published version
 
-The package is on npm as `@ludentes/marshal`, and `0.0.0` / `private: true` are
+The package is on npm as `@opcheese/marshal`, and `0.0.0` / `private: true` are
 gone. Semver applies, with the pre-1.0 caveat that a minor may break you —
 this one does, twice.
 
@@ -54,7 +54,7 @@ second, is what makes the omission visible next time.
 `CountingState.holders` changed from `Holder[]` to `{ holder, units }[]` for
 the same reason — the count belongs in the state, not in repeated entries.
 
-### New: `@ludentes/marshal/rank`
+### New: `@opcheese/marshal/rank`
 
 A fourth subpath export. `agingRank({ priority, since, cap, interval })` builds
 the `effective = priority + min(cap, floor(waited / interval))` curve that the

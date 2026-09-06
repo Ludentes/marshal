@@ -185,7 +185,7 @@ Read this part. Three of these have bitten real systems.
 **Starvation is yours.** Removing deadlock leaves starvation: a low-ranked job
 can be refused forever, and nothing in the package notices. The classical fix is
 *aging* — let waiting raise effective priority. `pick()` deliberately has none
-built in, because an aging curve is policy; `@ludentes/marshal/rank` ships one
+built in, because an aging curve is policy; `@opcheese/marshal/rank` ships one
 as a separate import, so using it is a decision and disagreeing with it costs
 an import rather than a fork. If your `rank` ignores how long a job has waited,
 you have built a scheduler that can starve.

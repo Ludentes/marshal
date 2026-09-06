@@ -1,5 +1,5 @@
 {
-  "name": "@ludentes/marshal",
+  "name": "@opcheese/marshal",
   "version": "0.1.0",
   "license": "MIT",
   "description": "Admissibility and record: allocators, pick(), explained refusals",
