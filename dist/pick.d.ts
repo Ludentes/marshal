@@ -1,7 +1,18 @@
 import type { Blocked, CostFn, Holder, Job, RankFn } from "./types";
+/** One holder of a counting resource, and how many units it took. */
+export interface CountingHolder {
+    holder: Holder;
+    units: number;
+}
 export interface CountingState {
     limit: number;
-    holders: Holder[];
+    /**
+     * The count lives HERE, not in repeated entries. N identical `Holder`
+     * records are indistinguishable, so a release removing "the holder whose id
+     * is A" removes one of them and leaks the rest — silently lowering the
+     * limit for the life of the process.
+     */
+    holders: CountingHolder[];
 }
 /**
  * One replenishing allowance over one resource.

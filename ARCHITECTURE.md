@@ -184,10 +184,12 @@ Read this part. Three of these have bitten real systems.
 
 **Starvation is yours.** Removing deadlock leaves starvation: a low-ranked job
 can be refused forever, and nothing in the package notices. The classical fix is
-*aging* — let waiting raise effective priority — and Marshal deliberately ships
-no ranking function, because an aging curve is policy. If your `rank` ignores
-how long a job has waited, you have built a scheduler that can starve.
-[INTEGRATING.md](INTEGRATING.md#writing-a-rank-function) has a working one.
+*aging* — let waiting raise effective priority. `pick()` deliberately has none
+built in, because an aging curve is policy; `@ludentes/marshal/rank` ships one
+as a separate import, so using it is a decision and disagreeing with it costs
+an import rather than a fork. If your `rank` ignores how long a job has waited,
+you have built a scheduler that can starve.
+[INTEGRATING.md](INTEGRATING.md#writing-a-rank-function) shows the wiring.
 
 **The deadlock guarantee is per `pick()` call.** If your code takes a permit and
 *then* calls `pick()`, it is holding one thing while waiting for another — you

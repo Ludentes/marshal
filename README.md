@@ -20,24 +20,24 @@ Extracted from Galatea, where it runs the admission half of an agent scheduler.
 
 ## Install
 
-Not on npm. `package.json` keeps `"private": true` so an accidental
-`npm publish` fails rather than succeeds. Install from this repository:
-
 ```bash
-pnpm add git+https://github.com/Ludentes/marshal.git
+pnpm add @ludentes/marshal
 ```
 
-No credential needed and no build step: `dist/` is committed. Works with npm
-and pnpm alike. ESM, no dependencies, verified on Node 20, 22 and 24 —
-CommonJS consumers can `require()` it on Node 22 and later.
+No build step: `dist/` ships in the tarball. ESM, no dependencies, verified on
+Node 20, 22 and 24 — CommonJS consumers can `require()` it on Node 22 and
+later.
 
-**The version is `0.0.0` and stays there.** There is no release cadence and no
-semver promise: a git install resolves to whatever `main` is when you run it.
-If that matters, pin the commit —
-`pnpm add git+https://github.com/Ludentes/marshal.git#<sha>` — and read
-[Status](#status) for what does and does not change here. Adding an entry to
-`BLOCKED_KINDS` is the one change that would break a consumer silently, so it
-is guarded by a compile-time tie between the const and the union.
+**Pre-1.0, and semver applies below 1.0 the way it always does: a minor may
+break you.** There is no release cadence — versions appear when the upstream
+copy changes enough to be worth one. Pin exactly (`@ludentes/marshal@0.1.0`,
+no caret) if you would rather read the [changelog](CHANGELOG.md) than be
+surprised by it. Adding an entry to `BLOCKED_KINDS` is the one change that
+would break a consumer *silently*, so it is guarded by a compile-time tie
+between the const and the union.
+
+A git install still works if you want to track `main` ahead of a release:
+`pnpm add git+https://github.com/Ludentes/marshal.git`.
 
 ## Sixty seconds
 
@@ -50,8 +50,8 @@ const rank = (jobs) => jobs.map((job) => ({ job, rank: 0, why: { base: 0 } }))
 
 const result = pick({
   jobs: [
-    { id: "job-1", needs: ["repo:cms"] },
-    { id: "job-2", needs: ["repo:cms"] },
+    { id: "job-1", needs: [{ resource: "repo:cms" }] },
+    { id: "job-2", needs: [{ resource: "repo:cms" }] },
   ],
   capacity: { exclusive: { "repo:cms": {} } },
   rank,
@@ -86,11 +86,20 @@ Four kinds, and a refusal for each.
 | unavailable | may it be taken yet? | `not-ready`, with an optional `until` |
 | budget | is there allowance left in **every** window? | `budget-exhausted`, with `resets` |
 
+A need says *how much*, not just *what*: `{ resource: "lane", units: 2 }` takes
+two of a counting resource, and `{ resource: "provider", amount: 4 }` debits
+four of a budget. A bare `{ resource }` is one unit at whatever your `CostFn`
+says — the plain-string case, spelled out. Naming a resource twice in one job
+is one resource; naming it twice *two different ways* throws, because there is
+no honest answer to which of the two you meant.
+
 `pick()` is all-or-nothing per job: one that took two of three resources and
 then refused would leak the two, and nothing would release them because no
 grant was returned to release. Ranking is injected — an aging curve is policy
 wearing mechanism's clothes, and left inside `pick()` every consumer that
-disagrees with it forks the package.
+disagrees with it forks the package. A default sits one import away rather than
+inside: [`agingRank()`](API.md#agingrankinput-agingrankinput-rankfn) builds the
+curve out of accessors you supply, so `Job` never learns what a priority is.
 
 ## The two layers
 
@@ -114,12 +123,12 @@ waiting is the caller's decision, made with the caller's information.
 
 Each of these is a real defect that reached a real system.
 
-**An unpriced job is free.** `pick()` uses `job.cost`, else `cost(job)`, else
-zero — and a zero-cost job is admitted by a *completely exhausted* window.
-Guessing a number would be a policy, so the package refuses to guess. If you
-configured `budget` and never see a refusal, this is why. See
-[`cost`](API.md#cost--the-one-that-bites) for the same window answering both
-ways.
+**An unpriced job is free.** A need is priced by its own `amount`, else by the
+injected `cost(job, resource)`, else **zero** — and a zero-cost job is admitted
+by a *completely exhausted* window. Guessing a number would be a policy, so the
+package refuses to guess. If you configured `budget` and never see a refusal,
+this is why. See [`cost`](API.md#cost--the-one-that-bites) for the same window
+answering both ways.
 
 **`rank` must be a total permutation.** Return every job exactly once or
 `pick()` throws. A rank that filters loses a job into neither list, where
@@ -147,8 +156,8 @@ the admission error it is.
 
 ## Status
 
-**Built, not published.** `dist/` is committed and the subpath exports point at
-it. That is not a preference: pnpm gates install-time build scripts behind
+**Published, and built before it is.** `dist/` is committed and the subpath
+exports point at it. That is not a preference: pnpm gates install-time build scripts behind
 `onlyBuiltDependencies`, so a `prepare` script would leave a consumer with no
 `dist/` and no error. Exports onto TypeScript source do not work either —
 measured against an agent runtime that marks anything under `node_modules`

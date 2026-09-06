@@ -1,13 +1,83 @@
 # Changelog
 
-There are no releases and the version stays `0.0.0`, so this file is keyed by
-**commit**. A git install resolves to whatever `main` is when you run it; pin a
-sha if you need it to hold still.
-
 Entries record what a *consumer* would notice. Refreshes that only replay
 Galatea's history into `src/` without changing behaviour are not listed.
 
-## Unreleased — `main`
+Everything below `0.1.0` predates the first npm release and is keyed by
+**commit**, because there was no version to key it by: a git install resolved
+to whatever `main` was when you ran it.
+
+## `0.1.0` — the first published version
+
+The package is on npm as `@ludentes/marshal`, and `0.0.0` / `private: true` are
+gone. Semver applies, with the pre-1.0 caveat that a minor may break you —
+this one does, twice.
+
+### Breaking: `needs` carries structure, not bare strings
+
+`Job.needs` was `string[]` and is now `Need[]`.
+
+```ts
+// before
+{ id: "job-1", needs: ["repo:cms"] }
+// after
+{ id: "job-1", needs: [{ resource: "repo:cms" }] }
+```
+
+The mechanical migration is `needs: names.map((resource) => ({ resource }))`,
+and a bare `{ resource }` means exactly what a plain string meant: one unit, at
+whatever the `CostFn` says. TypeScript catches every call site.
+
+What it buys is a job saying *how much*: `units` for counting resources,
+`amount` for consumable ones. Before this, a job needing two of a pool of three
+could only ask twice — and two identical entries are indistinguishable, so the
+release of one leaked the other. Naming a resource twice still coalesces;
+naming it twice two *different* ways now throws rather than silently picking
+one.
+
+### Breaking: `Job.cost` is gone, and `CostFn` takes the resource
+
+`Job.cost` (a per-job override) is removed. Use `Need.amount`, which is the
+same override said per resource — the level a price actually lives at.
+
+`CostFn` widened from `(job) => number` to `(job, resource) => number`, because
+a job needing two budgets in different denominations — tokens and emails — has
+no single right number.
+
+**This one does not break your build, which is the danger.** A one-argument
+function stays assignable to the two-argument type, so an existing `CostFn`
+compiles unchanged and goes on pricing every budget alike. Nothing in the
+toolchain will point at it. If you budget more than one resource, go look at
+your `CostFn` deliberately; spelling both parameters, even where you ignore the
+second, is what makes the omission visible next time.
+
+`CountingState.holders` changed from `Holder[]` to `{ holder, units }[]` for
+the same reason — the count belongs in the state, not in repeated entries.
+
+### New: `@ludentes/marshal/rank`
+
+A fourth subpath export. `agingRank({ priority, since, cap, interval })` builds
+the `effective = priority + min(cap, floor(waited / interval))` curve that the
+README has always described and the package has always refused to contain.
+
+It is a separate module on purpose: never-queue trades deadlock for starvation,
+and the package that removed the first should not leave the second unanswered —
+but the curve is still policy, so taking it is an import you write rather than
+a default you inherit. `Job` gains no `priority` and no `since` field; the
+accessors are the seam. Ties past the cap break by elapsed time, which is the
+part a hand-rolled version usually misses: without it, two equally-aged jobs
+fall back to `sort` stability, and the order you handed in is not FIFO.
+
+### Also
+
+Defects found while the above was being written, each reproduced before it was
+fixed: a negative price credited a budget and manufactured allowance for
+the jobs behind it; a need was priced twice per job so the admission check and
+the debit could disagree; jobs saturating a counting resource were ordered
+arbitrarily rather than oldest-first; and holder units arriving from a consumer
+were not validated at the boundary.
+
+## Before `0.1.0`
 
 ### `93f9021` — CommonJS can require it
 

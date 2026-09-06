@@ -1,6 +1,62 @@
-/** An unpriced job is free. Guessing a number here would be a policy. */
-function costOf(job, cost) {
-    return job.cost ?? cost?.(job) ?? 0;
+/**
+ * An unpriced job is free. Guessing a number here would be a policy.
+ *
+ * `need.amount` prices this one resource specifically, and takes precedence
+ * over the injected {@link CostFn} — the same precedence its own doc comment
+ * states. A price that is not a finite non-negative number is the caller
+ * breaking its own contract, so it THROWS rather than returning a `Blocked`:
+ * see the comment at the call site in `firstBlocker` for why there is no
+ * honest `Blocked` for it.
+ *
+ * `priced` is the per-job memo, and it is why the price the check used is the
+ * price the debit applies. `CostFn` belongs to the consumer and its contract
+ * never required determinism; widening it to `(job, resource)` makes a
+ * stateful per-resource implementation the natural thing to write, and a
+ * function returning 1 then 60 granted a job on 1 and charged the window 60.
+ * The memo is filled LAZILY, on the first ask for a name that actually has a
+ * budget window, so a counting-only resource never reaches the estimator.
+ */
+function costOf(job, need, priced, cost) {
+    const memo = priced.get(need.resource);
+    if (memo !== undefined)
+        return memo;
+    const price = need.amount ?? cost?.(job, need.resource) ?? 0;
+    if (!Number.isFinite(price)) {
+        throw new Error(`cost for job ${job.id} on "${need.resource}" must be a finite ` +
+            `number, got ${price}`);
+    }
+    // Negative is the same class of caller error, and a worse one: a negative
+    // price CREDITS the window, so one job at -100 against a window at 90 of
+    // 100 bought the two jobs behind it a hundred units of an allowance that
+    // had ten. `reconcile` already clamps at zero for exactly this reason;
+    // admission did not. Zero stays legal — an unpriced need is free, and that
+    // is deliberate.
+    if (price < 0) {
+        throw new Error(`cost for job ${job.id} on "${need.resource}" must not be ` +
+            `negative, got ${price}`);
+    }
+    priced.set(need.resource, price);
+    return price;
+}
+/**
+ * A unit count that is not a positive integer is the caller breaking its own
+ * contract, so it THROWS. `0` would consume nothing while passing the check,
+ * and a fraction would make `taken` drift away from any number a holder
+ * released.
+ *
+ * One rule, stated once, because two places take a unit count from the
+ * caller: the needs on a job and the holders on a `CountingState`. `where`
+ * names whichever one it was, since the throw is only useful if it says which
+ * number to go and fix.
+ */
+function checkUnits(units, where) {
+    if (!Number.isInteger(units) || units < 1) {
+        throw new Error(`units for ${where} must be a positive integer, got ${units}`);
+    }
+    return units;
+}
+function unitsOf(need) {
+    return checkUnits(need.units ?? 1, `"${need.resource}"`);
 }
 /**
  * `what` is the job's own id because that is genuinely all this package
@@ -23,8 +79,9 @@ function asHolder(job, now) {
  * limit-of-one. That is the same mistake as sizing admission to the loosest
  * window, made across kinds instead of within one.
  */
-function firstBlocker(job, needs, w) {
-    for (const resource of needs) {
+function firstBlocker(job, needs, w, priced) {
+    for (const need of needs) {
+        const resource = need.resource;
         // Whether any map has heard of this name at all. A name the caller never
         // declared is a typo; a name declared with no allocation limit is a
         // deliberate choice. The two must not be conflated — see the `known`
@@ -46,21 +103,19 @@ function firstBlocker(job, needs, w) {
         const budget = w.budget.get(resource);
         if (budget) {
             known = true;
-            const price = costOf(job, w.cost);
-            // A price that is not a number is the caller breaking its own contract,
-            // so it THROWS, exactly as a rank() that drops a job does. It is not a
-            // scarcity condition and there is no honest `Blocked` for it:
-            // `budget-exhausted` would claim a full window and name a reset that
-            // does not exist, and `custom` is construct-only for consumers.
+            // A price that is not a number is the caller breaking its own
+            // contract, so `costOf` THROWS, exactly as a rank() that drops a job
+            // does. It is not a scarcity condition and there is no honest
+            // `Blocked` for it: `budget-exhausted` would claim a full window and
+            // name a reset that does not exist, and `custom` is construct-only for
+            // consumers.
             //
             // Failing closed per-job is not enough either. `spent + NaN > limit` is
             // false for every window, so a NaN price granted the job and wrote
             // `spent: NaN`, after which every later job in the pass was granted too
             // — one bad price silently disabled the budget for the whole pass, and
             // a per-job refusal nobody reads is how that stays invisible.
-            if (!Number.isFinite(price)) {
-                throw new Error(`cost for job ${job.id} on "${resource}" must be a finite number, got ${price}`);
-            }
+            const price = costOf(job, need, priced, w.cost);
             // Every window, not the loosest. The tightest one is the allowance; the
             // others are burst limits, and satisfying only a burst limit is how a
             // scheduler sprints into a wall on day two.
@@ -80,14 +135,25 @@ function firstBlocker(job, needs, w) {
         const counted = w.counting.get(resource);
         if (counted) {
             known = true;
-            if (counted.holders.length >= counted.limit) {
-                // Handed out by reference on purpose, after checking it is not
-                // observable: `holders` only grows, so once it reaches `limit` no
-                // later job can clear this check for the same resource, and `w` is
-                // discarded when `pick` returns. A defensive copy here was written
-                // first, along with a test for it — the test could not be made to
-                // fail, which is what proved the copy was mechanism nobody needed.
-                return { kind: "no-capacity", resource, holders: counted.holders };
+            const units = unitsOf(need);
+            const taken = counted.holders.reduce((n, h) => n + h.units, 0);
+            if (taken + units > counted.limit) {
+                // `.map()` is a shape translation, not a defensive copy:
+                // `CountingState` carries `CountingHolder`, but `no-capacity` carries
+                // plain `Holder[]`, and `Blocked` is deliberately unchanged here.
+                //
+                // It is nonetheless the thing that makes sharing safe. `.map()`
+                // allocates a FRESH array, so a later `holders.push` — and units make
+                // those possible after a refusal, since this branch is entered on
+                // `taken + units > limit`, which does not imply `taken === limit` —
+                // cannot be reached through the array already handed to the caller.
+                // The `Holder`s inside it are still shared with `w`, which is fine
+                // because a `Holder` is read-only data.
+                return {
+                    kind: "no-capacity",
+                    resource,
+                    holders: counted.holders.map((h) => h.holder),
+                };
             }
         }
         // The name is in no map at all: the caller never declared it. Granting it
@@ -109,24 +175,72 @@ function firstBlocker(job, needs, w) {
  * Called only after {@link firstBlocker} cleared every need.
  *
  * Applies to every map the name appears in, and must walk the SAME list
- * `firstBlocker` checked. Checking one list and debiting another is how a
- * resource gets overcommitted with both halves looking correct in isolation.
+ * `firstBlocker` checked with the SAME prices — hence the shared `priced`
+ * memo. Checking one list and debiting another is how a resource gets
+ * overcommitted with both halves looking correct in isolation, and re-deriving
+ * the price is the same bug one level down: it walked the same list and
+ * charged a different number.
  */
-function consume(job, needs, w) {
-    for (const resource of needs) {
+function consume(job, needs, w, priced) {
+    for (const need of needs) {
+        const resource = need.resource;
         if (w.exclusive.has(resource)) {
             w.exclusive.set(resource, asHolder(job, w.now));
         }
         const budget = w.budget.get(resource);
         if (budget) {
-            const price = costOf(job, w.cost);
+            const price = costOf(job, need, priced, w.cost);
             for (const win of budget)
                 win.spent += price;
         }
         const counted = w.counting.get(resource);
-        if (counted)
-            counted.holders.push(asHolder(job, w.now));
+        if (counted) {
+            counted.holders.push({
+                holder: asHolder(job, w.now),
+                units: unitsOf(need),
+            });
+        }
     }
+}
+/**
+ * One entry per resource, or a throw.
+ *
+ * A name repeated in `needs` is one resource, not two: unfolded,
+ * `["lane","lane"]` was tested once against a free lane and then consumed
+ * twice, so a limit-of-one resource ended up with two holders. Identical
+ * repeats COALESCE rather than throwing, because a real caller composes one
+ * job's needs by concatenating independently-sourced lists and a harmless
+ * repeat must not take down the pass.
+ *
+ * Repeats that DISAGREE throw. Two entries naming one resource with different
+ * units or amounts is the caller not knowing what it needs, and there is no
+ * honest `Blocked` for it — the same reason a non-finite price throws.
+ *
+ * The two comparisons are deliberately ASYMMETRIC, and it is not a slip.
+ * `units` is normalized before comparing, because an omitted `units` genuinely
+ * EQUALS 1: `{t}` and `{t, units: 1}` are the same request, so they coalesce.
+ * `amount` is compared raw, because an omitted `amount` means "ask the
+ * CostFn", and that is a different request than charging zero — the CostFn
+ * may return anything. So `{t}` beside `{t, amount: 0}` is two callers asking
+ * for two different things and throws, while `{t}` beside `{t, units: 1}` does
+ * not. Pinned by its own test, since a reader meeting it cold reads it as a
+ * bug.
+ */
+function resolveNeeds(job) {
+    const byName = new Map();
+    for (const need of job.needs) {
+        const seen = byName.get(need.resource);
+        if (seen === undefined) {
+            byName.set(need.resource, need);
+            continue;
+        }
+        if ((seen.units ?? 1) !== (need.units ?? 1) ||
+            seen.amount !== need.amount) {
+            throw new Error(`job ${job.id} asks for "${need.resource}" two different ways; ` +
+                "a resource may appear once per job");
+        }
+    }
+    return [...byName.values()];
 }
 /**
  * Rank the jobs, then walk them in that order taking all-or-nothing.
@@ -143,9 +257,25 @@ function consume(job, needs, w) {
  */
 export function pick(i) {
     const w = {
+        // Holder units are checked HERE, at the boundary, and not where they are
+        // summed. `counted.holders` comes straight from the caller, and nothing
+        // validated it: a `CountingState` rebuilt from a parsed reading — JSON, a
+        // report store, a shape written before `CountingHolder` existed — carried
+        // `units: undefined`, so `taken` was NaN, `NaN + units > limit` was false
+        // for every job, and every job in the pass was granted on a saturated
+        // resource. That is the budget branch's "one bad price silently disabled
+        // the budget for the whole pass", on the counting path; before units the
+        // check was `holders.length >= limit` and structurally could not be NaN.
+        // A throw naming the resource and the holder beats a phantom grant.
         counting: new Map(Object.entries(i.capacity.counting ?? {}).map(([name, c]) => [
             name,
-            { limit: c.limit, holders: [...c.holders] },
+            {
+                limit: c.limit,
+                holders: c.holders.map((h) => {
+                    checkUnits(h.units, `holder ${h.holder?.id} of "${name}"`);
+                    return h;
+                }),
+            },
         ])),
         exclusive: new Map(Object.entries(i.capacity.exclusive ?? {}).map(([name, e]) => [
             name,
@@ -195,22 +325,29 @@ export function pick(i) {
             .map((j) => j.id)
             .join(", ")}`);
     }
-    for (const { job, rank } of ranked) {
-        // A name repeated in `needs` is one resource, not two. `needs` carries no
-        // multiplicity, and the check and the debit read it separately: unfolded,
-        // `["lane","lane"]` was tested once against a free lane and then consumed
-        // twice, so a limit-of-one resource ended up with two holders and a budget
-        // window was debited double what admission approved. If a job ever needs
-        // two units of something, that wants an explicit count in the type, not a
-        // repeated string that happens to work in one half of the code.
-        const needs = [...new Set(job.needs)];
-        const blocked = firstBlocker(job, needs, w);
+    // Resolved BEFORE the loop, with the other pass-wide contract checks, and
+    // for the same reason. `resolveNeeds` throws on a job whose needs name one
+    // resource two different ways, and thrown from inside the loop it aborted
+    // the pass after earlier jobs had already been granted — `pick` returns
+    // nothing on a throw, so those grants were lost and nothing launched, and
+    // under NEVER QUEUE the caller re-asks and meets the same malformed row
+    // every pass. It stays a throw: it is the caller breaking its own contract
+    // and there is no honest `Blocked` for it. Hoisting only makes it
+    // deterministic and costs no completed work.
+    //
+    // The price memo stays INSIDE the loop. It is per-job by contract — one
+    // shared across jobs would charge the second job the first one's rate,
+    // which is the bug `costOf`'s own doc comment records.
+    const resolved = ranked.map((r) => ({ ...r, needs: resolveNeeds(r.job) }));
+    for (const { job, rank, needs } of resolved) {
+        const priced = new Map();
+        const blocked = firstBlocker(job, needs, w, priced);
         if (blocked) {
             refused.push({ job, blocked });
             continue;
         }
-        consume(job, needs, w);
-        granted.push({ job, holds: needs, rank });
+        consume(job, needs, w, priced);
+        granted.push({ job, holds: needs.map((n) => n.resource), rank });
     }
     return { granted, refused };
 }

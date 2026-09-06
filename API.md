@@ -1,13 +1,16 @@
 # Marshal API
 
-Three subpath exports. There is no barrel and no default export — import the
+Four subpath exports. There is no barrel and no default export — import the
 module you need.
 
 ```ts
 import { pick, reconcile } from "@ludentes/marshal/pick"
 import { acquirePermit, NoPermit, permitFile } from "@ludentes/marshal/permit"
+import { agingRank } from "@ludentes/marshal/rank"
 import { BLOCKED_KINDS } from "@ludentes/marshal/types"
-import type { Blocked, Holder, Job, RankFn, CostFn } from "@ludentes/marshal/types"
+import type {
+  Blocked, Holder, Job, Need, RankFn, CostFn,
+} from "@ludentes/marshal/types"
 ```
 
 **ESM, and verified on Node 20, 22 and 24.** No dependencies: the package
@@ -75,8 +78,8 @@ const rank = (jobs) => jobs.map((job) => ({ job, rank: 0, why: { base: 0 } }))
 
 const result = pick({
   jobs: [
-    { id: "job-1", needs: ["repo:cms"] },
-    { id: "job-2", needs: ["repo:cms"] },
+    { id: "job-1", needs: [{ resource: "repo:cms" }] },
+    { id: "job-2", needs: [{ resource: "repo:cms" }] },
   ],
   capacity: { exclusive: { "repo:cms": {} } },
   rank,
@@ -92,7 +95,7 @@ granted job-1 [ 'repo:cms' ]
 refused job-2 {
   kind: 'resource-held',
   resource: 'repo:cms',
-  by: { id: 'job-1', what: 'job-1', since: '1788175651109' }
+  by: { id: 'job-1', what: 'job-1', since: '1788780461390' }
 }
 ```
 
@@ -115,6 +118,9 @@ contract, because there is no honest `Blocked` for "you passed nonsense".
 | `rank` dropped a job | `rank() must return every job it was given; it dropped b` |
 | `rank` returned one twice | `rank() must return each job exactly once; it returned a twice` |
 | a cost is not finite | `cost for job X on "Y" must be a finite number, got NaN` |
+| a cost is negative | `cost for job X on "Y" must not be negative, got -1` |
+| `units` is not a positive integer | `units for "Y" must be a positive integer, got 0` |
+| one job asks for a resource two ways | `job X asks for "Y" two different ways; a resource may appear once per job` |
 
 The first two are the same defect seen from two sides, and both are silent
 corruption if allowed through: a dropped job is neither run nor refused and
@@ -129,7 +135,7 @@ limits enforced.
 
 ```ts
 interface Capacity {
-  counting?: Record<string, { limit: number; holders: Holder[] }>
+  counting?: Record<string, { limit: number; holders: CountingHolder[] }>
   exclusive?: Record<string, { by?: Holder }>
   unavailable?: Record<string, { until?: number }>
   budget?: Record<string, BudgetWindow[]>
@@ -150,8 +156,38 @@ and is granted: you told Marshal about it and told it no allocation limit
 applies, which is what a bare circuit breaker on an unmetered provider looks
 like.
 
-**A repeated name in `needs` is one resource, not two.** `["lane", "lane"]`
-holds one lane and debits one unit.
+**The count lives in the state, not in repeated entries.** A counting
+resource's `holders` is `{ holder, units }[]`, so one holder taking three units
+is one record saying three — not three identical records. N identical `Holder`
+entries are indistinguishable, and a release removing "the holder whose id is
+A" removes one of them and leaks the rest, silently lowering the limit for the
+life of the process.
+
+**A repeated name in `needs` is one resource, not two.** Two bare
+`{ resource: "lane" }` entries hold one lane and debit one unit. Two entries
+that *disagree* — one asking two units, one asking one — throw: the package
+will not pick a winner between two things you said.
+
+```ts
+pick({
+  jobs: [
+    { id: "big", needs: [{ resource: "lane", units: 2 }] },
+    { id: "small", needs: [{ resource: "lane" }] },
+  ],
+  capacity: { counting: { lane: { limit: 2, holders: [] } } },
+  rank,
+  now,
+})
+```
+
+```
+granted big [ 'lane' ]
+refused small {
+  kind: 'no-capacity',
+  resource: 'lane',
+  holders: [ { id: 'big', what: 'big', since: '1788780461390' } ]
+}
+```
 
 ### `BudgetWindow`
 
@@ -173,11 +209,16 @@ five hours while the weekly allowance is gone is worse than saying nothing.
 
 ### `cost` — the one that bites
 
-**An unpriced job is free.** `pick` uses `job.cost`, else `cost(job)`, else
-**zero** — and a zero-cost job is admitted by a completely exhausted window,
-because `spent + 0 > limit` is false. Guessing a number here would be a policy,
-so the package refuses to guess; the consequence is that a budget you never
-priced never binds.
+**An unpriced job is free.** A need is priced by its own `amount`, else by
+`cost(job, resource)`, else **zero** — and a zero-cost job is admitted by a
+completely exhausted window, because `spent + 0 > limit` is false. Guessing a
+number here would be a policy, so the package refuses to guess; the consequence
+is that a budget you never priced never binds.
+
+`cost` takes the **resource** as well as the job, because one job may need two
+budgets in different denominations — tokens and emails — and one number cannot
+be right for both. A price is computed once per resource per job and reused for
+the check and the debit, so those two can never disagree.
 
 ```ts
 const capacity = {
@@ -188,13 +229,19 @@ const capacity = {
     ],
   },
 }
-const jobs = [{ id: "job-1", needs: ["provider"] }]
+const jobs = [{ id: "job-1", needs: [{ resource: "provider" }] }]
 
 // No cost: priced at zero, so a FULL window still admits it.
 pick({ jobs, capacity, rank, now }).granted.length        // 1
 
 // With a cost, the tightest window binds.
 pick({ jobs, capacity, rank, now, cost: () => 1 }).refused[0].blocked
+
+// Or price the need itself, with no CostFn at all — same refusal.
+pick({
+  jobs: [{ id: "job-1", needs: [{ resource: "provider", amount: 1 }] }],
+  capacity, rank, now,
+}).refused[0].blocked
 ```
 
 ```
@@ -391,6 +438,92 @@ path is tested without killing real processes.
 
 ---
 
+## `@ludentes/marshal/rank`
+
+### `agingRank(input: AgingRankInput): RankFn`
+
+A ready-made ranking, because never-queue trades deadlock for starvation and
+the package that removes the first should not leave the second unanswered. It
+lives in its own module rather than inside `pick()` so that taking it is a
+decision: the curve is policy, and a consumer who disagrees should be able to
+not import it rather than fork the package.
+
+```ts
+interface AgingRankInput {
+  priority: (job: Job) => number
+  /** When the job was first asked for, in the same clock `pick` is given. */
+  since: (job: Job) => number
+  /** Ceiling on the aging bonus. Zero turns aging off. */
+  cap: number
+  /** Clock units per point of bonus. */
+  interval: number
+}
+```
+
+`effective = priority + min(cap, floor(waited / interval))`, descending, with
+raw elapsed time as the tiebreak beneath it — oldest first.
+
+**`Job` gains no `priority` and no `since` field.** Those are your vocabulary,
+and a package that learned them could not claim to know nothing about what a
+job is. The accessors are the seam.
+
+```ts
+import { agingRank } from "@ludentes/marshal/rank"
+
+const rank = agingRank({
+  priority: (job) => job.p,
+  since: (job) => job.at,
+  cap: 5,
+  interval: 60_000,
+})
+
+const jobs = [
+  { id: "urgent", p: 3, at: now, needs: [] },
+  { id: "waiting", p: 0, at: now - 600_000, needs: [] },
+]
+
+for (const r of rank(jobs, now)) console.log(r.job.id, r.rank, r.why)
+```
+
+```
+waiting 5 { base: 0, waited: 5 }
+urgent 3 { base: 3, waited: 0 }
+```
+
+Ten minutes of waiting at `interval: 60_000` earns ten points of bonus, capped
+at five — enough to overtake a priority of three.
+
+**The cap is not decoration.** Uncapped, a long-waiting job eventually outranks
+everything and priority stops meaning anything. But the cap alone does not
+guarantee a waiting job is eventually considered: past `cap * interval` two
+jobs of equal base priority have identical ranks, and their order falls back to
+`sort` stability — the order you handed in, which out of a map iteration or a
+directory listing is not FIFO. The elapsed-time tiebreak is what restores the
+guarantee, and it sits *beneath* the rank so age still cannot erase priority.
+
+#### Throws
+
+Like `pick`, on the caller breaking its own contract rather than on scarcity.
+`cap` and `interval` are validated once when the `RankFn` is built, because
+they are properties of the policy and re-checking them per job would report one
+fault N times.
+
+| Condition | Message |
+|---|---|
+| `interval` not positive and finite | `agingRank interval must be a positive finite number, got 0` |
+| `cap` negative or not finite | `agingRank cap must be a non-negative finite number, got -1` |
+| `now` not finite | `agingRank now must be a finite number, got NaN` |
+| `priority(job)` not finite | `priority for job X must be a finite number, got undefined` |
+| `since(job)` not finite | `since for job X must be a finite number, got undefined` |
+
+The accessors are deliberately untyped — they are the seam where your
+vocabulary stays yours — so a job missing the field is a realistic input, not a
+hypothetical one. A NaN rank reaches `Grant.rank`, the audit record this module
+exists to produce, and scrambles `sort` into implementation-defined order: a
+wrong answer nobody can see.
+
+---
+
 ## `@ludentes/marshal/types`
 
 The vocabulary, kept apart from the algorithm so a consumer that only needs to
@@ -406,12 +539,29 @@ interface Holder {
   since: string
 }
 
-/** A unit of work asking for resources. `needs` are opaque resource names. */
+/** A unit of work asking for resources. */
 interface Job {
   id: string
-  needs: string[]
-  /** Overrides CostFn when you already know the number. */
-  cost?: number
+  needs: Need[]
+}
+
+/**
+ * One resource a job asks for, and how much of it. A bare `{ resource }` is
+ * one unit at whatever the injected CostFn says the resource costs.
+ */
+interface Need {
+  /** An opaque name. Marshal never learns what it means. */
+  resource: string
+  /** Counting resources: units to take. Default 1. */
+  units?: number
+  /** Consumable resources: amount to debit. Overrides CostFn. */
+  amount?: number
+}
+
+/** How much of a counting resource one holder has. */
+interface CountingHolder {
+  holder: Holder
+  units: number
 }
 
 type Blocked =
@@ -438,7 +588,7 @@ it.
 
 ```ts
 type RankFn = (jobs: Job[], now: number) => Ranked[]
-type CostFn = (job: Job) => number
+type CostFn = (job: Job, resource: string) => number
 
 interface Ranked {
   job: Job
@@ -462,11 +612,20 @@ Both are injected rather than built in. `effective = priority + min(CAP,
 floor(waited / INTERVAL))` is policy wearing mechanism's clothes: left inside
 `pick()`, every consumer that disagrees with the aging curve forks the package.
 
+A one-argument `CostFn` stays assignable to the two-argument type, so a
+consumer that ignores `resource` keeps compiling and keeps pricing every budget
+alike. That is convenient and it is a trap: nothing in the toolchain will tell
+you the second denomination is wrong. Spell both parameters even when you
+ignore the second.
+
 The simplest legal rank — order preserved, nothing prioritised:
 
 ```ts
 const rank = (jobs) => jobs.map((job) => ({ job, rank: 0, why: { base: 0 } }))
 ```
+
+For one that actually ages, see
+[`agingRank`](#agingrankinput-agingrankinput-rankfn).
 
 `why` is not decoration. It is what lets you answer "why did that job go
 first?" a week later, and `pick` returns the effective `rank` on every `Grant`

@@ -88,8 +88,14 @@ two names where you needed one — and the collision you were preventing happens
 anyway, which looks like a bug somewhere else entirely.
 
 If you want the effect of locking a parent and a child together, name both and
-let all-or-nothing do it: `needs: ["account:acme", "crm:opp-441"]` acquires both
-or neither.
+let all-or-nothing do it — `needs: [{ resource: "account:acme" }, { resource:
+"crm:opp-441" }]` acquires both or neither.
+
+A need may also say **how much**: `{ resource: "lane", units: 2 }` takes two of
+a counting resource, `{ resource: "provider", amount: 4 }` debits four of a
+budget. Naming a resource twice in one job is one resource; naming it twice
+with *different* units or amounts throws, because there is no honest answer to
+which of the two you meant.
 
 ## Which layer do you need?
 
@@ -126,15 +132,23 @@ in a day. When several windows are short, the refusal reports the **latest**
 reset among them, so you are not told to retry in five hours while a weekly
 allowance is gone.
 
-**An unpriced job is free.** `pick()` takes `job.cost`, else `cost(job)`, else
-**zero** — and a zero-cost job is admitted by a completely exhausted window.
-Guessing a number would be a policy, so the package refuses to guess. *If you
-configured a budget and never see a refusal, this is why.*
+**An unpriced job is free.** A need is priced by its own `amount`, else by
+`cost(job, resource)`, else **zero** — and a zero-cost job is admitted by a
+completely exhausted window. Guessing a number would be a policy, so the
+package refuses to guess. *If you configured a budget and never see a refusal,
+this is why.*
 
-Note the current shape: `CostFn` is `(job) => number` with no resource argument,
-so one job needing two differently-denominated budgets debits the same number to
-both. If you budget tokens and emails in one job today, price them yourself per
-resource rather than relying on a single `CostFn`.
+`CostFn` is `(job, resource) => number`. The resource argument is there because
+one job needing two differently-denominated budgets — tokens and emails — has
+no single right number. **A one-argument function stays assignable**, so a
+`CostFn` written before that argument existed keeps compiling and keeps pricing
+every budget alike; nothing in the toolchain will point at it. Spell both
+parameters even where you ignore the second, so the omission is visible:
+
+```ts
+// Deliberately one unit whatever the resource — we budget only the provider.
+const cost: CostFn = (_job, _resource) => 1
+```
 
 ### Reconcile, or the budget lies
 
@@ -170,26 +184,35 @@ itself needs work — a thermostat rather than a thermometer.
 as given and does not sort. The `rank` number is carried into the grant for your
 audit trail. If you compute scores, you must sort by them yourself.
 
-Marshal ships no default, because an aging curve is policy. Here is one that
-prevents starvation — copy it and change the constants:
+`pick()` takes no default, because an aging curve is policy — but one ships
+beside it, in its own module, so taking it is a decision rather than something
+you inherit:
 
 ```ts
-const CAP = 5           // most a job can gain from waiting
-const INTERVAL = 60_000 // one point per minute waited
+import { agingRank } from "@ludentes/marshal/rank"
 
-const rank = (jobs, now) =>
-  jobs
-    .map((job) => {
-      const base = priorityOf(job)
-      const waited = Math.min(CAP, Math.floor((now - submittedAt(job)) / INTERVAL))
-      return { job, rank: base + waited, why: { base, waited } }
-    })
-    .sort((a, b) => b.rank - a.rank)
+const rank = agingRank({
+  priority: priorityOf,     // your vocabulary, not Marshal's
+  since: submittedAt,
+  cap: 5,                   // most a job can gain from waiting
+  interval: 60_000,         // one point per minute waited
+})
 ```
+
+`Job` gains no `priority` and no `since` field; the accessors are the seam. If
+that curve is not yours, write your own — the shape is
+`(jobs, now) => Ranked[]` and nothing else in the package cares where the
+numbers came from.
 
 The cap matters. Without it, age eventually outranks everything and priority
 stops meaning anything; with it, a waiting job climbs a bounded amount and then
-holds. **If your `rank` ignores waiting time entirely, low-priority jobs can be
+holds. The cap alone is not enough, though: past `cap * interval` two jobs of
+equal base priority tie, and a tie falls back to the order you handed in, which
+out of a map or a directory listing is not FIFO. `agingRank` breaks ties by
+elapsed time, beneath the rank so age still cannot erase priority. If you write
+your own, do the same.
+
+**If your `rank` ignores waiting time entirely, low-priority jobs can be
 refused forever** — Marshal removes deadlock, not starvation.
 
 ## Growing: one process, many processes, many machines

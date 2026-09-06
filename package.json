@@ -1,7 +1,6 @@
 {
   "name": "@ludentes/marshal",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "license": "MIT",
   "description": "Admissibility and record: allocators, pick(), explained refusals",
   "repository": {
@@ -21,6 +20,11 @@
       "types": "./dist/pick.d.ts",
       "import": "./dist/pick.js",
       "require": "./dist/pick.js"
+    },
+    "./rank": {
+      "types": "./dist/rank.d.ts",
+      "import": "./dist/rank.js",
+      "require": "./dist/rank.js"
     },
     "./types": {
       "types": "./dist/types.d.ts",
@@ -45,7 +49,12 @@
     "src",
     "README.md",
     "API.md",
+    "ARCHITECTURE.md",
+    "INTEGRATING.md",
     "CHANGELOG.md",
     "LICENSE"
-  ]
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }
