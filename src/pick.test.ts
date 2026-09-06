@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest"
 import { pick, reconcile } from "./pick"
 import type { Job, RankFn } from "./types"
 
-const job = (id: string, ...needs: string[]): Job => ({ id, needs })
+const job = (id: string, ...needs: string[]): Job => ({
+  id,
+  needs: needs.map((resource) => ({ resource })),
+})
 
 /** Simplest possible policy: the order given. Ranking is the consumer's. */
 const asGiven: RankFn = (jobs) =>
@@ -12,6 +15,9 @@ const asGiven: RankFn = (jobs) =>
     rank: jobs.length - index,
     why: { base: jobs.length - index },
   }))
+
+const flat: RankFn = (jobs) =>
+  jobs.map((job) => ({ job, rank: 0, why: { base: 0 } }))
 
 describe("pick", () => {
   it("grants up to a counting resource's limit and refuses by name", () => {
@@ -47,7 +53,12 @@ describe("pick", () => {
         counting: {
           lane: {
             limit: 1,
-            holders: [{ id: "z", what: "already running", since: "earlier" }],
+            holders: [
+              {
+                holder: { id: "z", what: "already running", since: "earlier" },
+                units: 1,
+              },
+            ],
           },
         },
       },
@@ -206,7 +217,7 @@ describe("pick with a budget", () => {
     // The 5-hour window has 100 free and would say yes on its own. The weekly
     // window has 17. Admission must satisfy every window, not the loosest.
     const result = pick({
-      jobs: [{ id: "a", needs: ["tokens"], cost: 37.5 }],
+      jobs: [{ id: "a", needs: [{ resource: "tokens", amount: 37.5 }] }],
       capacity: { budget: windows() },
       rank: asGiven,
       now: 1000,
@@ -228,7 +239,7 @@ describe("pick with a budget", () => {
     // one level down inside it: a `find` would answer 18_000 here purely
     // because of array order.
     const result = pick({
-      jobs: [{ id: "a", needs: ["tokens"], cost: 60 }],
+      jobs: [{ id: "a", needs: [{ resource: "tokens", amount: 60 }] }],
       capacity: {
         budget: {
           tokens: [
@@ -250,9 +261,9 @@ describe("pick with a budget", () => {
   it("grants when every window fits, and debits all of them", () => {
     const result = pick({
       jobs: [
-        { id: "a", needs: ["tokens"], cost: 7.5 },
-        { id: "b", needs: ["tokens"], cost: 7.5 },
-        { id: "c", needs: ["tokens"], cost: 7.5 },
+        { id: "a", needs: [{ resource: "tokens", amount: 7.5 }] },
+        { id: "b", needs: [{ resource: "tokens", amount: 7.5 }] },
+        { id: "c", needs: [{ resource: "tokens", amount: 7.5 }] },
       ],
       capacity: { budget: windows() },
       rank: asGiven,
@@ -265,7 +276,7 @@ describe("pick with a budget", () => {
 
   it("uses the injected CostFn when the job carries no cost", () => {
     const result = pick({
-      jobs: [{ id: "a", needs: ["tokens"] }],
+      jobs: [{ id: "a", needs: [{ resource: "tokens" }] }],
       capacity: { budget: windows() },
       rank: asGiven,
       now: 1000,
@@ -277,7 +288,7 @@ describe("pick with a budget", () => {
 
   it("treats an unpriced job as free rather than guessing a number", () => {
     const result = pick({
-      jobs: [{ id: "a", needs: ["tokens"] }],
+      jobs: [{ id: "a", needs: [{ resource: "tokens" }] }],
       capacity: { budget: windows() },
       rank: asGiven,
       now: 1000,
@@ -292,7 +303,7 @@ describe("pick with a budget", () => {
     // it, and a caller that then declines to act has paid for nothing.
     const capacity = { budget: windows() }
     pick({
-      jobs: [{ id: "a", needs: ["tokens"], cost: 7.5 }],
+      jobs: [{ id: "a", needs: [{ resource: "tokens", amount: 7.5 }] }],
       capacity,
       rank: asGiven,
       now: 1000,
@@ -369,8 +380,14 @@ describe("pick, the findings from review", () => {
     }
     const result = pick({
       jobs: [
-        { id: "a", needs: ["tokens", "tokens"], cost: 8 },
-        { id: "b", needs: ["tokens"], cost: 8 },
+        {
+          id: "a",
+          needs: [
+            { resource: "tokens", amount: 8 },
+            { resource: "tokens", amount: 8 },
+          ],
+        },
+        { id: "b", needs: [{ resource: "tokens", amount: 8 }] },
       ],
       capacity,
       rank: asGiven,
@@ -421,7 +438,7 @@ describe("pick, the findings from review", () => {
     // `resets` is the caller's clock in the caller's units, so offsets from a
     // monotonic base are legitimate. A 0 seed reported "already reset".
     const result = pick({
-      jobs: [{ id: "a", needs: ["t"], cost: 50 }],
+      jobs: [{ id: "a", needs: [{ resource: "t", amount: 50 }] }],
       capacity: {
         budget: { t: [{ name: "w", limit: 10, spent: 9, resets: -100 }] },
       },
@@ -458,6 +475,124 @@ describe("pick, the findings from review", () => {
   })
 })
 
+describe("per-resource cost", () => {
+  it("lets Need.amount override the CostFn, per resource", () => {
+    // This pins `amount` precedence, and nothing else: with `amount` set on
+    // BOTH needs the injected `cost` is never consulted, so it would pass
+    // against a one-argument CostFn too. The two tests below are the ones
+    // that pin per-resource pricing.
+    const result = pick({
+      jobs: [
+        {
+          id: "j",
+          needs: [
+            { resource: "tokens", amount: 5000 },
+            { resource: "emails", amount: 1 },
+          ],
+        },
+      ],
+      capacity: {
+        budget: {
+          tokens: [{ name: "d", limit: 10_000, spent: 0, resets: 0 }],
+          emails: [{ name: "d", limit: 3, spent: 0, resets: 0 }],
+        },
+      },
+      rank: flat,
+      now: 0,
+      cost: () => 5000,
+    })
+    expect(result.granted).toHaveLength(1)
+  })
+
+  it("debits two windows at two different prices", () => {
+    // The defect this branch is named for, asserted end to end rather than by
+    // proxy: one CostFn, two denominations, and a token price that would
+    // refuse outright if it landed on the email window.
+    const perResource = (_job: Job, resource: string) =>
+      resource === "tokens" ? 5000 : 1
+    const result = pick({
+      jobs: [
+        { id: "j", needs: [{ resource: "tokens" }, { resource: "emails" }] },
+      ],
+      capacity: {
+        budget: {
+          tokens: [{ name: "d", limit: 10_000, spent: 0, resets: 0 }],
+          emails: [{ name: "d", limit: 3, spent: 0, resets: 0 }],
+        },
+      },
+      rank: flat,
+      now: 0,
+      cost: perResource,
+    })
+    expect(result.granted.map((g) => g.job.id)).toEqual(["j"])
+  })
+
+  it("refuses on the small window when its own price alone is too big", () => {
+    // The companion, and the half that makes the pair fail if either price
+    // lands on the wrong window: the token window has room to spare, and the
+    // job is refused solely because 4 emails do not fit in 3.
+    const perResource = (_job: Job, resource: string) =>
+      resource === "tokens" ? 5000 : 4
+    const result = pick({
+      jobs: [
+        { id: "j", needs: [{ resource: "tokens" }, { resource: "emails" }] },
+      ],
+      capacity: {
+        budget: {
+          tokens: [{ name: "d", limit: 10_000, spent: 0, resets: 0 }],
+          emails: [{ name: "d", limit: 3, spent: 0, resets: 0 }],
+        },
+      },
+      rank: flat,
+      now: 0,
+      cost: perResource,
+    })
+    expect(result.granted).toEqual([])
+    expect(result.refused[0]?.blocked).toMatchObject({
+      kind: "budget-exhausted",
+      resource: "emails",
+    })
+  })
+
+  it("passes the resource to CostFn", () => {
+    const seen: string[] = []
+    pick({
+      jobs: [
+        { id: "j", needs: [{ resource: "tokens" }, { resource: "emails" }] },
+      ],
+      capacity: {
+        budget: {
+          tokens: [{ name: "d", limit: 10, spent: 0, resets: 0 }],
+          emails: [{ name: "d", limit: 10, spent: 0, resets: 0 }],
+        },
+      },
+      rank: flat,
+      now: 0,
+      cost: (_job, resource) => {
+        seen.push(resource)
+        return 1
+      },
+    })
+    expect(seen).toContain("tokens")
+    expect(seen).toContain("emails")
+  })
+
+  it("throws on a non-finite amount, as it does on a non-finite price", () => {
+    expect(() =>
+      pick({
+        jobs: [
+          { id: "j", needs: [{ resource: "tokens", amount: Number.NaN }] },
+        ],
+        capacity: {
+          budget: { tokens: [{ name: "d", limit: 10, spent: 0, resets: 0 }] },
+        },
+        rank: flat,
+        now: 0,
+      }),
+    ).toThrow(/finite/)
+  })
+})
+
 describe("non-finite numbers fail closed", () => {
   // Three findings from the 2026-08-19 medium review. A NaN is not an
   // unlikely input here: the next caller derives a CostFn from a provider
@@ -478,8 +613,8 @@ describe("non-finite numbers fail closed", () => {
     expect(() =>
       pick({
         jobs: [
-          { id: "a", needs: ["prov"] },
-          { id: "b", needs: ["prov"] },
+          { id: "a", needs: [{ resource: "prov" }] },
+          { id: "b", needs: [{ resource: "prov" }] },
         ],
         capacity: {
           budget: {
@@ -501,7 +636,7 @@ describe("non-finite numbers fail closed", () => {
     // contract and a refusal would report scarcity that is not there.
     expect(() =>
       pick({
-        jobs: [{ id: "a", needs: ["prov"] }],
+        jobs: [{ id: "a", needs: [{ resource: "prov" }] }],
         capacity: {
           budget: {
             prov: [{ name: "weekly", limit: 10, spent: 0, resets: 1 }],
@@ -516,7 +651,7 @@ describe("non-finite numbers fail closed", () => {
 
   it("still grants a finite price", () => {
     const out = pick({
-      jobs: [{ id: "a", needs: ["prov"] }],
+      jobs: [{ id: "a", needs: [{ resource: "prov" }] }],
       capacity: {
         budget: { prov: [{ name: "weekly", limit: 10, spent: 0, resets: 1 }] },
       },
@@ -565,7 +700,7 @@ describe("rank must be a permutation, not merely onto", () => {
     // was given did come back.
     expect(() =>
       pick({
-        jobs: [{ id: "a", needs: ["lane"] }],
+        jobs: [{ id: "a", needs: [{ resource: "lane" }] }],
         capacity: { counting: { lane: { limit: 5, holders: [] } } },
         now: 0,
         rank: (jobs) =>
@@ -584,8 +719,8 @@ describe("rank must be a permutation, not merely onto", () => {
     expect(() =>
       pick({
         jobs: [
-          { id: "a", needs: ["lane"] },
-          { id: "a", needs: ["lane"] },
+          { id: "a", needs: [{ resource: "lane" }] },
+          { id: "a", needs: [{ resource: "lane" }] },
         ],
         capacity: { counting: { lane: { limit: 5, holders: [] } } },
         now: 0,
@@ -593,5 +728,431 @@ describe("rank must be a permutation, not merely onto", () => {
           jobs.map((job, n) => ({ job, rank: n, why: { base: n } })),
       }),
     ).toThrow(/twice|duplicate/i)
+  })
+})
+
+describe("need resolution", () => {
+  it("coalesces identical duplicates instead of double-consuming", () => {
+    const result = pick({
+      jobs: [{ id: "j", needs: [{ resource: "lane" }, { resource: "lane" }] }],
+      capacity: { counting: { lane: { limit: 1, holders: [] } } },
+      rank: flat,
+      now: 0,
+    })
+    expect(result.granted).toHaveLength(1)
+    expect(result.granted[0]?.holds).toEqual(["lane"])
+  })
+
+  it("counts an omitted amount as different, and an omitted units as same", () => {
+    // The asymmetry is load-bearing and easy to read as a bug, so it is
+    // pinned. An omitted `units` genuinely EQUALS 1, so the two entries agree
+    // and coalesce. An omitted `amount` means "ask the CostFn", which is not
+    // the same request as "charge zero" — the CostFn may return anything —
+    // so the two entries disagree and the job is refused as incoherent.
+    const coalesced = pick({
+      jobs: [
+        {
+          id: "j",
+          needs: [{ resource: "t" }, { resource: "t", units: 1 }],
+        },
+      ],
+      capacity: { counting: { t: { limit: 1, holders: [] } } },
+      rank: flat,
+      now: 0,
+    })
+    // One entry, not two: coalesced into a single need.
+    expect(coalesced.granted.map((g) => g.holds)).toEqual([["t"]])
+
+    expect(() =>
+      pick({
+        jobs: [
+          {
+            id: "j",
+            needs: [{ resource: "t" }, { resource: "t", amount: 0 }],
+          },
+        ],
+        capacity: {
+          budget: { t: [{ name: "w", limit: 10, spent: 0, resets: 1 }] },
+        },
+        rank: flat,
+        now: 0,
+      }),
+    ).toThrow(/two different ways/)
+  })
+
+  it("throws when one job asks for one resource two different ways", () => {
+    expect(() =>
+      pick({
+        jobs: [
+          {
+            id: "j",
+            needs: [
+              { resource: "lane", units: 1 },
+              { resource: "lane", units: 2 },
+            ],
+          },
+        ],
+        capacity: { counting: { lane: { limit: 4, holders: [] } } },
+        rank: flat,
+        now: 0,
+      }),
+    ).toThrow(/lane/)
+  })
+})
+
+describe("units", () => {
+  const two = (id: string) => ({ id, needs: [{ resource: "lane", units: 2 }] })
+
+  it("takes N units in one grant and records them as one holder", () => {
+    // `limit: 4`, two jobs of 2 units each: the second fills the lane exactly,
+    // and a third of any size is refused. Asserting only that the first job
+    // was granted was true whether units were honoured or ignored — the
+    // holder list is what says two were taken and not one.
+    const result = pick({
+      jobs: [two("a"), two("b"), { id: "c", needs: [{ resource: "lane" }] }],
+      capacity: { counting: { lane: { limit: 4, holders: [] } } },
+      rank: asGiven,
+      now: 0,
+    })
+    expect(result.granted.map((g) => g.job.id)).toEqual(["a", "b"])
+    const blocked = result.refused[0]?.blocked
+    if (blocked?.kind !== "no-capacity") throw new Error("expected no-capacity")
+    // Two jobs, two holders — not four entries for four units.
+    expect(blocked.holders.map((h) => h.id)).toEqual(["a", "b"])
+  })
+
+  it("refuses when the units asked for exceed what is left", () => {
+    const result = pick({
+      jobs: [two("a"), two("b")],
+      capacity: { counting: { lane: { limit: 3, holders: [] } } },
+      rank: flat,
+      now: 0,
+    })
+    expect(result.granted.map((g) => g.job.id)).toEqual(["a"])
+    expect(result.refused[0]?.blocked).toMatchObject({
+      kind: "no-capacity",
+      resource: "lane",
+    })
+  })
+
+  it("names each holder once, whatever its unit count", () => {
+    const result = pick({
+      jobs: [two("a"), two("b")],
+      capacity: { counting: { lane: { limit: 3, holders: [] } } },
+      rank: flat,
+      now: 0,
+    })
+    const blocked = result.refused[0]?.blocked
+    if (blocked?.kind !== "no-capacity") throw new Error("expected no-capacity")
+    // One entry, not two: a duplicated identity-less record is the leak.
+    expect(blocked.holders).toHaveLength(1)
+    expect(blocked.holders[0]?.id).toBe("a")
+  })
+
+  it("throws on a unit count that is not a positive integer", () => {
+    expect(() =>
+      pick({
+        jobs: [{ id: "a", needs: [{ resource: "lane", units: 0 }] }],
+        capacity: { counting: { lane: { limit: 4, holders: [] } } },
+        rank: flat,
+        now: 0,
+      }),
+    ).toThrow(/units/)
+  })
+})
+
+describe("a negative price is a caller error, not free allowance", () => {
+  // Measured before the fix: `costOf` guarded only `Number.isFinite`, while
+  // its sibling `unitsOf` rejected anything that was not a positive integer.
+  // A window at 90 of 100 granted all three of `x{amount:-100}`, `y{amount:
+  // 50}` and `z{amount:50}` — `x` drove `spent` to -10 and bought the other
+  // two 100 units of a window that had 10.
+
+  it("throws on a negative amount rather than crediting the window", () => {
+    expect(() =>
+      pick({
+        jobs: [{ id: "x", needs: [{ resource: "prov", amount: -100 }] }],
+        capacity: {
+          budget: { prov: [{ name: "w", limit: 100, spent: 90, resets: 1 }] },
+        },
+        rank: flat,
+        now: 0,
+      }),
+    ).toThrow(/negative/)
+  })
+
+  it("throws on a CostFn that returns a negative number", () => {
+    expect(() =>
+      pick({
+        jobs: [{ id: "x", needs: [{ resource: "prov" }] }],
+        capacity: {
+          budget: { prov: [{ name: "w", limit: 100, spent: 90, resets: 1 }] },
+        },
+        rank: flat,
+        now: 0,
+        cost: () => -100,
+      }),
+    ).toThrow(/negative/)
+  })
+
+  it("keeps a zero price legal, because an unpriced need is free", () => {
+    const out = pick({
+      jobs: [{ id: "x", needs: [{ resource: "prov", amount: 0 }] }],
+      capacity: {
+        budget: { prov: [{ name: "w", limit: 100, spent: 100, resets: 1 }] },
+      },
+      rank: flat,
+      now: 0,
+    })
+    expect(out.granted).toHaveLength(1)
+  })
+
+  it("does not let one negative price buy later jobs a full window", () => {
+    // The whole reproduction, end to end: a per-job refusal would not be
+    // enough, because the damage is what `x` writes into `spent` for `y` and
+    // `z` to spend. It throws, so nothing is granted at all.
+    expect(() =>
+      pick({
+        jobs: [
+          { id: "x", needs: [{ resource: "prov", amount: -100 }] },
+          { id: "y", needs: [{ resource: "prov", amount: 50 }] },
+          { id: "z", needs: [{ resource: "prov", amount: 50 }] },
+        ],
+        capacity: {
+          budget: { prov: [{ name: "w", limit: 100, spent: 90, resets: 1 }] },
+        },
+        rank: asGiven,
+        now: 0,
+      }),
+    ).toThrow(/negative/)
+  })
+})
+
+describe("one price per job per pass", () => {
+  // `CostFn` is the consumer's, and its contract never required determinism.
+  // Widening it to `(job, resource)` makes a stateful per-resource
+  // implementation the natural thing to write, so a check and a debit that
+  // each call it independently can now disagree — and did.
+
+  const oneThenSixty = () => {
+    let calls = 0
+    return () => {
+      calls += 1
+      return calls === 1 ? 1 : 60
+    }
+  }
+
+  it("debits the price it granted on, not a freshly derived one", () => {
+    // Measured before the fix: `a` was checked at 1 and charged 60, so the
+    // window read 60 of 100 instead of 1, and `b` — priced 60 — was refused
+    // by a shortfall that only the double call created.
+    const result = pick({
+      jobs: [
+        { id: "a", needs: [{ resource: "prov" }] },
+        { id: "b", needs: [{ resource: "prov" }] },
+      ],
+      capacity: {
+        budget: { prov: [{ name: "w", limit: 100, spent: 0, resets: 5 }] },
+      },
+      rank: asGiven,
+      now: 0,
+      cost: oneThenSixty(),
+    })
+    expect(result.granted.map((g) => g.job.id)).toEqual(["a", "b"])
+  })
+
+  it("calls the CostFn once per budgeted need it grants", () => {
+    const seen: string[] = []
+    pick({
+      jobs: [
+        { id: "a", needs: [{ resource: "tokens" }, { resource: "emails" }] },
+      ],
+      capacity: {
+        budget: {
+          tokens: [{ name: "d", limit: 100, spent: 0, resets: 0 }],
+          emails: [{ name: "d", limit: 100, spent: 0, resets: 0 }],
+        },
+      },
+      rank: flat,
+      now: 0,
+      cost: (_job, resource) => {
+        seen.push(resource)
+        return 1
+      },
+    })
+    expect(seen).toEqual(["tokens", "emails"])
+  })
+
+  it("asks no price for a resource that has no budget window", () => {
+    // The memo is consulted lazily, never filled up front: a counting-only
+    // resource must not reach the consumer's estimator at all.
+    const seen: string[] = []
+    pick({
+      jobs: [{ id: "a", needs: [{ resource: "lane" }] }],
+      capacity: { counting: { lane: { limit: 2, holders: [] } } },
+      rank: flat,
+      now: 0,
+      cost: (_job, resource) => {
+        seen.push(resource)
+        return 1
+      },
+    })
+    expect(seen).toEqual([])
+  })
+})
+
+describe("an incoming holder's units are the caller's contract too", () => {
+  // `need.units` is validated by `unitsOf` and prices by `costOf`; the units
+  // on holders the CALLER hands in were validated by nothing. A consumer
+  // building `CountingState` from a parsed reading — JSON, a report store, an
+  // on-disk shape written before `CountingHolder` existed — produced a holder
+  // with `units: undefined`, so `taken` was NaN, `NaN + units > limit` was
+  // false for every job, and every job in the pass was granted on a saturated
+  // resource. That is the budget branch's own "one bad price silently
+  // disabled the budget for the whole pass", reintroduced on the counting
+  // path: before units, the check was `holders.length >= limit`, which
+  // structurally could not be NaN.
+  const stale = {
+    holder: { id: "z", what: "written before units existed", since: "0" },
+  } as unknown as {
+    holder: { id: string; what: string; since: string }
+    units: number
+  }
+
+  it("throws on a holder whose units are missing", () => {
+    expect(() =>
+      pick({
+        jobs: [job("a", "lane"), job("b", "lane")],
+        capacity: { counting: { lane: { limit: 1, holders: [stale] } } },
+        rank: asGiven,
+        now: 0,
+      }),
+    ).toThrow(/units.*holder z.*"lane"/)
+  })
+
+  it("throws at the boundary, before any job is looked at", () => {
+    // The throw must land while building the working copy, not as a phantom
+    // grant halfway down the pass.
+    let ranked = false
+    const watched: RankFn = (jobs, now) => {
+      ranked = true
+      return asGiven(jobs, now)
+    }
+    expect(() =>
+      pick({
+        jobs: [job("a", "lane")],
+        capacity: { counting: { lane: { limit: 1, holders: [stale] } } },
+        rank: watched,
+        now: 0,
+      }),
+    ).toThrow(/units/)
+    expect(ranked).toBe(false)
+  })
+
+  it("throws on a fractional or zero holder count", () => {
+    for (const units of [0, 1.5, -1]) {
+      expect(() =>
+        pick({
+          jobs: [job("a", "lane")],
+          capacity: {
+            counting: {
+              lane: {
+                limit: 4,
+                holders: [
+                  { holder: { id: "z", what: "w", since: "0" }, units },
+                ],
+              },
+            },
+          },
+          rank: flat,
+          now: 0,
+        }),
+      ).toThrow(/units/)
+    }
+  })
+})
+
+describe("an incoherent job costs no completed work", () => {
+  // `resolveNeeds` threw from inside the grant loop, so a job whose needs
+  // name one resource two different ways aborted the pass after earlier jobs
+  // had already been granted — and since `pick()` returns nothing on a throw,
+  // those grants were lost and nothing launched. Under NEVER QUEUE the caller
+  // re-asks and hits the same malformed row on every pass, so the good jobs
+  // never run. Before units and amounts this path was `[...new Set(needs)]`
+  // and could not throw at all.
+  //
+  // The throw STAYS — it is a caller-contract violation and there is no
+  // honest `Blocked` for it — but it lands before anything has been granted.
+  const bad: Job = {
+    id: "bad",
+    needs: [
+      { resource: "lane", units: 1 },
+      { resource: "lane", units: 2 },
+    ],
+  }
+
+  it("throws before the first grant, not halfway down the pass", () => {
+    // A throw returns nothing, so "ok1's grant was lost" is not directly
+    // observable from outside — what IS observable is whether the pass got
+    // as far as pricing ok1 before it gave up. Priced means granted-then-
+    // discarded; not priced means the pass ended before it did any work.
+    const priced: string[] = []
+    expect(() =>
+      pick({
+        jobs: [job("ok1", "tokens"), bad],
+        capacity: {
+          counting: { lane: { limit: 5, holders: [] } },
+          budget: {
+            tokens: [{ name: "day", limit: 100, spent: 0, resets: 1 }],
+          },
+        },
+        rank: asGiven,
+        now: 0,
+        cost: (j) => {
+          priced.push(j.id)
+          return 1
+        },
+      }),
+    ).toThrow(/two different ways/)
+    expect(priced).toEqual([])
+  })
+
+  it("throws whatever the incoherent job's rank position", () => {
+    // Last in rank order is the case that used to lose the most work.
+    expect(() =>
+      pick({
+        jobs: [bad, job("ok1", "lane")],
+        capacity: { counting: { lane: { limit: 5, holders: [] } } },
+        rank: asGiven,
+        now: 0,
+      }),
+    ).toThrow(/two different ways/)
+  })
+
+  it("still prices each job on its own, one memo per job", () => {
+    // Resolving needs up front must not hoist the price memo with it: a
+    // shared memo would charge the second job the first one's rate.
+    const seen: number[] = []
+    let next = 10
+    const result = pick({
+      jobs: [job("a", "tokens"), job("b", "tokens")],
+      capacity: {
+        budget: {
+          tokens: [{ name: "day", limit: 100, spent: 0, resets: 1 }],
+        },
+      },
+      rank: asGiven,
+      now: 0,
+      cost: () => {
+        const price = next
+        next += 20
+        seen.push(price)
+        return price
+      },
+    })
+    expect(result.granted.map((g) => g.job.id)).toEqual(["a", "b"])
+    // Two jobs, two distinct prices — each asked for once and reused within
+    // its own job for the check and the debit.
+    expect(seen).toEqual([10, 30])
   })
 })

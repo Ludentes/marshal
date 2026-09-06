@@ -15,12 +15,29 @@ export interface Holder {
   since: string
 }
 
-/** A unit of work asking for resources. `needs` are opaque resource names. */
+/**
+ * One resource a job asks for, and how much of it.
+ *
+ * A bare `{ resource }` is one unit at whatever the injected {@link CostFn}
+ * says the resource costs — exactly what a plain string meant before. It is
+ * not *unpriced*: with a `CostFn` supplied it is priced BY the `CostFn`, and
+ * only a caller that injects none gets a price of zero. `units` and `amount`
+ * each apply to the capacity map the name appears in, which is the rule
+ * `firstBlocker` already follows: every map is consulted and no branch exits
+ * the iteration early.
+ */
+export interface Need {
+  resource: string
+  /** Counting resources: units to take. Default 1. */
+  units?: number
+  /** Consumable resources: amount to debit. Overrides {@link CostFn}. */
+  amount?: number
+}
+
+/** A unit of work asking for resources. */
 export interface Job {
   id: string
-  needs: string[]
-  /** Overrides {@link CostFn} when the consumer already knows the number. */
-  cost?: number
+  needs: Need[]
 }
 
 /**
@@ -70,8 +87,15 @@ export interface Ranked {
  */
 export type RankFn = (jobs: Job[], now: number) => Ranked[]
 
-/** Estimating a job's cost is domain knowledge, so it is injected too. */
-export type CostFn = (job: Job) => number
+/**
+ * Estimating a job's cost is domain knowledge, so it is injected.
+ *
+ * `resource` is passed because a job may need two budgets in different
+ * denominations — tokens and emails — and one number cannot be right for
+ * both. An existing one-argument function stays assignable, so a consumer
+ * that ignores it keeps today's behaviour and must be migrated deliberately.
+ */
+export type CostFn = (job: Job, resource: string) => number
 
 // The const and the union are two declarations of one fact, so they are tied
 // together at compile time: a kind added to one and not the other stops the
